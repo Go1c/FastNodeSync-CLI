@@ -1,6 +1,6 @@
 # FastNodeSync CLI
 
-[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+[简体中文](README.zh-CN.md) | [English](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
 
 Obsidian ノートの双方向・準リアルタイム同期用の CLI クライアントです。[Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) と組み合わせ、GUI のない Linux サーバー（OpenClaw など）で、Obsidian デスクトップ／モバイルのプラグインに近い同期を実現します。
 

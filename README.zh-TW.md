@@ -1,6 +1,6 @@
 # FastNodeSync CLI
 
-[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+[简体中文](README.zh-CN.md) | [English](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
 
 Obsidian 筆記雙向、近即時同步的命令列用戶端，搭配 [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) 使用。適合無圖形介面的 Linux 伺服器（如 OpenClaw），同步能力與 Obsidian 桌面／行動版外掛相近。
 
