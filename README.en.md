@@ -1,6 +1,6 @@
 # FastNodeSync CLI
 
-[简体中文](README.md) | [한국어](README.ko.md)
+[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
 
 A command-line client for bidirectional, near real-time Obsidian note sync. It works with [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) and is intended for headless Linux servers (e.g. OpenClaw), offering sync capabilities comparable to the Obsidian desktop/mobile plugin.
 
