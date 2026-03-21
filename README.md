@@ -1,5 +1,7 @@
 # FastNodeSync CLI
 
+[English](README.en.md) | [한국어](README.ko.md)
+
 Obsidian 笔记双向实时同步的命令行客户端，配合 [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) 使用。适用于无 GUI 的 Linux 服务器环境（如 OpenClaw），实现与 Obsidian 桌面/移动端等价的同步能力。
 
 ## 功能
@@ -108,43 +110,89 @@ export FNS_TOKEN="your_api_token"
 python -m fns_cli.main run -c config.yaml
 ```
 
-后台运行：
+#### 临时后台（不推荐用于生产）
 
 ```bash
-# 使用 nohup
+# nohup（服务器重启后需手动再启动）
 nohup python -m fns_cli.main run -c config.yaml > fns.log 2>&1 &
 
-# 或使用 screen / tmux
+# screen / tmux（适合临时调试）
 screen -dmS fns python -m fns_cli.main run -c config.yaml
 ```
 
-使用 systemd 管理（推荐）：
+---
+
+## 守护进程与开机自启（systemd，推荐）
+
+在 Linux 服务器上，使用 **systemd** 可同时实现：**崩溃自动重启**、**开机自动启动**、**统一日志（journalctl）**。
+
+假设：
+
+- 项目目录：`/opt/FastNodeSync-CLI`
+- 配置文件：`/opt/FastNodeSync-CLI/config.yaml`
+- 运行用户：`your_user`（勿用 root）
+- Python：`/usr/bin/python3`（以 `which python3` 为准）
+
+创建单元文件：
+
+```bash
+sudo nano /etc/systemd/system/fns-cli.service
+```
+
+示例内容：
 
 ```ini
-# /etc/systemd/system/fns-cli.service
 [Unit]
-Description=FastNodeSync CLI
-After=network.target
+Description=FastNodeSync CLI - Obsidian vault sync
+Documentation=https://github.com/Go1c/FastNodeSync-CLI
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=your_user
-WorkingDirectory=/path/to/FastNodeSync-CLI
-ExecStart=/usr/bin/python3 -m fns_cli.main run -c config.yaml
+Group=your_user
+WorkingDirectory=/opt/FastNodeSync-CLI
+Environment=PYTHONUNBUFFERED=1
+# 可选：从单独文件加载环境变量（chmod 600）
+# EnvironmentFile=/opt/FastNodeSync-CLI/.env
+ExecStart=/usr/bin/python3 -m fns_cli.main run -c /opt/FastNodeSync-CLI/config.yaml
 Restart=always
 RestartSec=10
+
+# 安全加固（可选）
+# NoNewPrivileges=true
+# PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+启用并启动：
+
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable fns-cli
-sudo systemctl start fns-cli
-sudo systemctl status fns-cli     # 查看状态
-journalctl -u fns-cli -f          # 查看日志
+sudo systemctl enable fns-cli    # 开机自启
+sudo systemctl start fns-cli     # 立即启动
+sudo systemctl status fns-cli    # 查看状态
 ```
+
+常用命令：
+
+```bash
+sudo systemctl stop fns-cli
+sudo systemctl restart fns-cli
+journalctl -u fns-cli -f         # 实时日志
+journalctl -u fns-cli --since today
+```
+
+**说明：**
+
+- `enable` 会在系统重启后自动拉起服务；依赖网络时 `After=network-online.target` 可减少「启动过早连不上服务器」的情况。
+- 确保 `your_user` 对 `watch_path`（vault 目录）有读写权限。
+- 上游服务端部署可参考 [fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 文档（Docker / 一键脚本等）。
+
+---
 
 ## CLI 命令
 
@@ -190,3 +238,8 @@ python -m fns_cli.main status -c config.yaml
 - 首次 `run` 或 `pull` 会拉取远端所有文件，后续仅增量同步
 - 同一文件被多端同时修改时，以最后写入服务器的版本为准（服务端负责冲突处理）
 - `.fns_state.json` 文件不会被同步到远端
+
+## 相关项目
+
+- [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) — 服务端
+- [obsidian-fast-note-sync](https://github.com/haierkeys/obsidian-fast-note-sync) — Obsidian 插件客户端
