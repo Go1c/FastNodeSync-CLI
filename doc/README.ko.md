@@ -12,7 +12,11 @@
 https://github.com/Go1c/FastNodeSync-CLI
 ```
 
-**예시 프롬프트:** *저장소 `https://github.com/Go1c/FastNodeSync-CLI` 를 클론하고, 의존성 설치, FNS 자격 증명으로 `config.yaml` 작성, 재부팅 후에도 동작하는 systemd 유닛 설치.*
+**예시 프롬프트**（아래 블록 전체 복사. 자동 링크로 깨지지 않게 일반 텍스트）：
+
+```text
+저장소 https://github.com/Go1c/FastNodeSync-CLI 를 클론하고, 의존성 설치, FNS 자격 증명으로 config.yaml 작성, 재부팅 후에도 동작하는 systemd 유닛 설치.
+```
 
 ---
 
