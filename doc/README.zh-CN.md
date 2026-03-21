@@ -12,7 +12,7 @@
 https://github.com/Go1c/FastNodeSync-CLI
 ```
 
-**示例提示：** *「在我的 Linux 服务器上克隆该仓库、安装依赖、用我的 FNS 凭据写好 `config.yaml`，并安装 systemd 服务以便重启后仍运行。」*
+**示例提示：** *克隆仓库「https://github.com/Go1c/FastNodeSync-CLI」，安装依赖、用我的 FNS 凭据写好 `config.yaml`，并安装 systemd 服务以便重启后仍运行。*
 
 ---
 

@@ -12,7 +12,7 @@
 https://github.com/Go1c/FastNodeSync-CLI
 ```
 
-**Example prompt:** *“Clone this repo on my Linux server, install requirements, create a working `config.yaml` from my FNS credentials, and install a systemd unit so it survives reboot.”*
+**Example prompt:** *Clone this repo "https://github.com/Go1c/FastNodeSync-CLI", install requirements, create a working `config.yaml` from my FNS credentials, and install a systemd unit so it survives reboot.*
 
 ---
 
