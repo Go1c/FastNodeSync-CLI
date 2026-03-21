@@ -1,6 +1,6 @@
 # FastNodeSync CLI
 
-[English](README.en.md) | [한국어](README.ko.md)
+[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
 
 Obsidian 笔记双向实时同步的命令行客户端，配合 [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) 使用。适用于无 GUI 的 Linux 服务器环境（如 OpenClaw），实现与 Obsidian 桌面/移动端等价的同步能力。
 
