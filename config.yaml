@@ -1,0 +1,24 @@
+server:
+  api: "https://your-server.zeabur.app"
+  token: "your_api_token"
+  vault: "defaultVault"
+
+sync:
+  watch_path: "./vault"
+  sync_notes: true
+  sync_files: true
+  sync_config: true
+  exclude_patterns:
+    - ".git/**"
+    - ".trash/**"
+    - "*.tmp"
+  file_chunk_size: 524288
+
+client:
+  reconnect_max_retries: 15
+  reconnect_base_delay: 3
+  heartbeat_interval: 30
+
+logging:
+  level: "INFO"
+  file: ""
