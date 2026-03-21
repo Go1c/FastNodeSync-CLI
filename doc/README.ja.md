@@ -6,13 +6,7 @@
 
 ## OpenClaw / AI エージェント向け
 
-**次の 1 行をコピー**して、**OpenClaw**、**Cursor**、**Copilot** などに貼り付けてください。エージェントが本リポジトリをクローンし、依存関係のインストール、`config.yaml` の設定、**systemd** のユニット登録まで進められます。**Fast Note Sync Service の URL** と **API トークン**は、聞かれたときに渡してください。
-
-```
-https://github.com/Go1c/FastNodeSync-CLI
-```
-
-**プロンプト例**（ブロックごとコピー。プレーンテキストで、リンクの自動整形を避けます）：
+**プロンプト例**（ブロックごとコピー）：
 
 ```text
 リポジトリ https://github.com/Go1c/FastNodeSync-CLI をクローンし、依存関係を入れ、FNS の認証情報で config.yaml を作り、再起動後も動く systemd のユニットを入れて。
