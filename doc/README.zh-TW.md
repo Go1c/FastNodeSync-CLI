@@ -1,6 +1,20 @@
 # FastNodeSync CLI
 
-[简体中文](README.zh-CN.md) | [English](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+[简体中文](README.zh-CN.md) | [English](../README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+
+---
+
+## 把本倉庫交給 OpenClaw / 任意 AI Agent
+
+**複製下面這一行**，貼到 **OpenClaw**、**Cursor**、**Copilot** 等编程 Agent。Agent 可依本倉庫說明完成克隆、安裝依賴、填寫 `config.yaml`、設定 **systemd** 開機自啟 —— 您只需在對話中提供 **Fast Note Sync Service 位址** 與 **API Token**。
+
+```
+https://github.com/Go1c/FastNodeSync-CLI
+```
+
+**示例提示：** *「在我的 Linux 伺服器上克隆該倉庫、安裝依賴、用我的 FNS 憑證寫好 `config.yaml`，並安裝 systemd 服務以便重啟後仍執行。」*
+
+---
 
 Obsidian 筆記雙向、近即時同步的命令列用戶端，搭配 [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) 使用。適合無圖形介面的 Linux 伺服器（如 OpenClaw），同步能力與 Obsidian 桌面／行動版外掛相近。
 
