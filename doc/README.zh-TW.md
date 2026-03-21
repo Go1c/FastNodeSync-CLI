@@ -16,6 +16,7 @@ Obsidian 筆記雙向、近即時同步的命令列用戶端，搭配 [Fast Note
 
 ```
 FastNodeSync-CLI/
+├── doc/                   # 說明文件（多語言 README）
 ├── fns_cli/               # Python 套件
 ├── tests/                 # 冒煙測試（unittest）
 ├── .github/workflows/     # GitHub Actions CI

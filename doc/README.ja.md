@@ -16,6 +16,7 @@ Obsidian ノートの双方向・準リアルタイム同期用の CLI クライ
 
 ```
 FastNodeSync-CLI/
+├── doc/                   # ドキュメント（多言語 README）
 ├── fns_cli/               # Python パッケージ
 ├── tests/                 # スモークテスト（unittest）
 ├── .github/workflows/     # GitHub Actions CI
