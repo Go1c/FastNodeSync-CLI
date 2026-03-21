@@ -6,13 +6,7 @@
 
 ## OpenClaw / AI 에이전트용
 
-**아래 한 줄을 복사**해 **OpenClaw**, **Cursor**, **Copilot** 등에 붙여 넣으세요. 에이전트가 이 저장소를 클론하고 의존성 설치, `config.yaml` 작성, **systemd** 유닛 설정까지 진행할 수 있습니다. **Fast Note Sync Service URL**과 **API 토큰**은 질문받을 때만 알려주면 됩니다.
-
-```
-https://github.com/Go1c/FastNodeSync-CLI
-```
-
-**예시 프롬프트**（아래 블록 전체 복사. 자동 링크로 깨지지 않게 일반 텍스트）：
+**예시 프롬프트**（블록 전체 복사）：
 
 ```text
 저장소 https://github.com/Go1c/FastNodeSync-CLI 를 클론하고, 의존성 설치, FNS 자격 증명으로 config.yaml 작성, 재부팅 후에도 동작하는 systemd 유닛 설치.

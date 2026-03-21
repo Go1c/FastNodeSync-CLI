@@ -6,12 +6,6 @@
 
 ## Give this to OpenClaw / any AI agent
 
-**Copy the line below** into **OpenClaw**, **Cursor**, **Copilot**, or any coding agent. The agent can clone this repo, install dependencies, edit `config.yaml`, and set up **systemd** using the instructions here — you only need to provide your **Fast Note Sync Service URL** and **API token** when asked.
-
-```
-https://github.com/Go1c/FastNodeSync-CLI
-```
-
 **Example prompt** (copy the whole block):
 
 ```text

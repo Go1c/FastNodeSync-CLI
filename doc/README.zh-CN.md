@@ -6,12 +6,6 @@
 
 ## 把本仓库交给 OpenClaw / 任意 AI Agent
 
-**复制下面这一行**，发给 **OpenClaw**、**Cursor**、**Copilot** 等编程 Agent。Agent 可根据本仓库文档完成克隆、安装依赖、填写 `config.yaml`、配置 **systemd** 开机自启 —— 你只需在对话里提供 **Fast Note Sync Service 地址** 和 **API Token**。
-
-```
-https://github.com/Go1c/FastNodeSync-CLI
-```
-
 **示例提示**（整段复制）：
 
 ```text
