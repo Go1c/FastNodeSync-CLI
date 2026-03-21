@@ -12,7 +12,11 @@
 https://github.com/Go1c/FastNodeSync-CLI
 ```
 
-**プロンプト例:** *リポジトリ `https://github.com/Go1c/FastNodeSync-CLI` をクローンし、依存関係を入れ、FNS の認証情報で `config.yaml` を作り、再起動後も動く systemd のユニットを入れて。*
+**プロンプト例**（ブロックごとコピー。プレーンテキストで、リンクの自動整形を避けます）：
+
+```text
+リポジトリ https://github.com/Go1c/FastNodeSync-CLI をクローンし、依存関係を入れ、FNS の認証情報で config.yaml を作り、再起動後も動く systemd のユニットを入れて。
+```
 
 ---
 
