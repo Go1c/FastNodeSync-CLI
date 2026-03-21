@@ -1,6 +1,20 @@
 # FastNodeSync CLI
 
-[简体中文](README.zh-CN.md) | [English](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+[简体中文](README.zh-CN.md) | [English](../README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+
+---
+
+## OpenClaw / AI エージェント向け
+
+**次の 1 行をコピー**して、**OpenClaw**、**Cursor**、**Copilot** などに貼り付けてください。エージェントが本リポジトリをクローンし、依存関係のインストール、`config.yaml` の設定、**systemd** のユニット登録まで進められます。**Fast Note Sync Service の URL** と **API トークン**は、聞かれたときに渡してください。
+
+```
+https://github.com/Go1c/FastNodeSync-CLI
+```
+
+**プロンプト例:** *「Linux サーバーにこのリポジトリをクローンし、依存関係を入れ、FNS の認証情報で `config.yaml` を作り、再起動後も動く systemd のユニットを入れて。」*
+
+---
 
 Obsidian ノートの双方向・準リアルタイム同期用の CLI クライアントです。[Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) と組み合わせ、GUI のない Linux サーバー（OpenClaw など）で、Obsidian デスクトップ／モバイルのプラグインに近い同期を実現します。
 
