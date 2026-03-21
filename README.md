@@ -1,145 +1,130 @@
 # FastNodeSync CLI
 
-[简体中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+[简体中文](README.zh-CN.md) | [English](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
 
-Obsidian 笔记双向实时同步的命令行客户端，配合 [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) 使用。适用于无 GUI 的 Linux 服务器环境（如 OpenClaw），实现与 Obsidian 桌面/移动端等价的同步能力。
+A command-line client for bidirectional, near real-time Obsidian note sync. It works with [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) and is intended for headless Linux servers (e.g. OpenClaw), offering sync capabilities comparable to the Obsidian desktop/mobile plugin.
 
-## 功能
+## Features
 
-- **双向实时同步**：本地文件变更自动推送到服务器，远端（Obsidian 等客户端）的变更自动拉取到本地
-- **全量内容同步**：支持 `.md` 笔记、附件文件（图片/HTML/Canvas 等）、`.obsidian/` 配置
-- **断线自动重连**：指数退避重连策略，网络恢复后自动增量补全
-- **防回环**：远端写入不会触发重复上传
-- **增量同步**：基于 `lastSyncTime` 仅同步变更部分
+- **Bidirectional real-time sync**: local changes are pushed to the server; remote changes (from Obsidian and other clients) are pulled to the local vault
+- **Full content**: `.md` notes, attachments (images, HTML, Canvas, etc.), and `.obsidian/` configuration
+- **Auto-reconnect**: exponential backoff when the connection drops; incremental catch-up after recovery
+- **Anti feedback loop**: writes from the server do not immediately re-trigger uploads
+- **Incremental sync**: uses `lastSyncTime` to sync only what changed
 
-## 项目结构
+## Project layout
 
 ```
 FastNodeSync-CLI/
-├── fns_cli/
-│   ├── main.py           # CLI 入口
-│   ├── config.py          # 配置加载
-│   ├── client.py          # WebSocket 客户端
-│   ├── sync_engine.py     # 同步引擎
-│   ├── note_sync.py       # 笔记同步协议
-│   ├── file_sync.py       # 附件同步协议（含分片上传/下载）
-│   ├── watcher.py         # 文件系统监控
-│   ├── hash_utils.py      # 哈希算法
-│   ├── protocol.py        # 消息编解码
-│   ├── state.py           # 状态持久化
-│   └── logger.py          # 日志
-├── tests/                 # 冒烟测试（unittest）
+├── fns_cli/               # Python package
+├── tests/                 # Smoke tests (unittest)
 ├── .github/workflows/     # GitHub Actions CI
-├── config.yaml            # 配置文件
-└── requirements.txt       # Python 依赖
+├── config.yaml            # Example configuration
+└── requirements.txt       # Dependencies
 ```
 
-## 开发与 CI
+## Development & CI
 
-本地运行冒烟测试（无需额外依赖）：
+Run smoke tests locally (stdlib only):
 
 ```bash
-# 在项目根目录
-set PYTHONPATH=.          # Linux/macOS: export PYTHONPATH=.
+# From the repository root
+export PYTHONPATH=.   # Windows: set PYTHONPATH=.
 python -m unittest discover -s tests -v
 ```
 
-推送或向 `main` 发起 PR 时，GitHub Actions 会自动：安装依赖、`compileall`、`fns_cli.main --help`、运行 `tests/` 下的 unittest。
+On push or PR to `main`, GitHub Actions installs dependencies, runs `compileall`, `python -m fns_cli.main --help`, and the unittest suite.
 
-## 部署步骤
+## Deployment
 
-### 1. 环境要求
+### 1. Requirements
 
 - Python 3.10+
 
-### 2. 安装依赖
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. 配置
+### 3. Configuration
 
-编辑 `config.yaml`：
+Edit `config.yaml`:
 
 ```yaml
 server:
-  api: "https://your-server-address"   # Fast Note Sync Service 地址
-  token: "your_api_token"              # 从管理面板获取的 API Token
-  vault: "notes"                       # Vault 名称，需与 Obsidian 插件端一致
+  api: "https://your-server-address"   # Fast Note Sync Service base URL
+  token: "your_api_token"              # API token from the admin panel
+  vault: "notes"                       # Vault name; must match the Obsidian plugin
 
 sync:
-  watch_path: "./vault"                # 本地同步目录（相对或绝对路径）
-  sync_notes: true                     # 同步 .md 笔记
-  sync_files: true                     # 同步附件文件
-  sync_config: true                    # 同步 .obsidian/ 配置
-  exclude_patterns:                    # 排除规则（fnmatch 语法）
+  watch_path: "./vault"                # Local vault path (relative or absolute)
+  sync_notes: true
+  sync_files: true
+  sync_config: true
+  exclude_patterns:
     - ".git/**"
     - ".trash/**"
     - "*.tmp"
-  file_chunk_size: 524288              # 附件分片大小，默认 512KB
+  file_chunk_size: 524288
 
 client:
-  reconnect_max_retries: 15            # 最大重连次数
-  reconnect_base_delay: 3             # 重连基础延迟（秒）
-  heartbeat_interval: 30              # 心跳间隔（秒）
+  reconnect_max_retries: 15
+  reconnect_base_delay: 3
+  heartbeat_interval: 30
 
 logging:
-  level: "INFO"                        # 日志级别：DEBUG / INFO / WARNING / ERROR
-  file: ""                             # 日志文件路径，留空则仅输出到终端
+  level: "INFO"
+  file: ""
 ```
 
-**获取 Token 的方法：**
+**How to obtain a token**
 
-1. 浏览器打开 Fast Note Sync Service 管理面板（如 `https://your-server-address`）
-2. 登录账号
-3. 点击 **"Copy API Config"**
-4. 从复制的 JSON 中提取 `api`、`apiToken`、`vault` 填入 `config.yaml`
+1. Open the Fast Note Sync Service web UI (e.g. `https://your-server-address`)
+2. Sign in
+3. Click **"Copy API Config"**
+4. Copy `api`, `apiToken`, and `vault` from the JSON into `config.yaml`
 
-也可以通过环境变量传入敏感信息（优先级低于配置文件）：
+Optional environment variables (override when not set in the file):
 
 ```bash
 export FNS_API="https://your-server-address"
 export FNS_TOKEN="your_api_token"
 ```
 
-### 4. 运行
+### 4. Run
 
 ```bash
-# 持续同步（前台运行）
 python -m fns_cli.main run -c config.yaml
 ```
 
-#### 临时后台（不推荐用于生产）
+#### Quick background (not for production)
 
 ```bash
-# nohup（服务器重启后需手动再启动）
 nohup python -m fns_cli.main run -c config.yaml > fns.log 2>&1 &
-
-# screen / tmux（适合临时调试）
 screen -dmS fns python -m fns_cli.main run -c config.yaml
 ```
 
 ---
 
-## 守护进程与开机自启（systemd，推荐）
+## Daemon & boot (systemd, recommended)
 
-在 Linux 服务器上，使用 **systemd** 可同时实现：**崩溃自动重启**、**开机自动启动**、**统一日志（journalctl）**。
+On Linux, **systemd** gives you **auto-restart on crash**, **start on boot**, and **centralized logs** via `journalctl`.
 
-假设：
+Assume:
 
-- 项目目录：`/opt/FastNodeSync-CLI`
-- 配置文件：`/opt/FastNodeSync-CLI/config.yaml`
-- 运行用户：`your_user`（勿用 root）
-- Python：`/usr/bin/python3`（以 `which python3` 为准）
+- Install path: `/opt/FastNodeSync-CLI`
+- Config: `/opt/FastNodeSync-CLI/config.yaml`
+- Unix user: `your_user` (do **not** run as root)
+- Python: `/usr/bin/python3` (verify with `which python3`)
 
-创建单元文件：
+Create a unit file:
 
 ```bash
 sudo nano /etc/systemd/system/fns-cli.service
 ```
 
-示例内容：
+Example:
 
 ```ini
 [Unit]
@@ -154,57 +139,53 @@ User=your_user
 Group=your_user
 WorkingDirectory=/opt/FastNodeSync-CLI
 Environment=PYTHONUNBUFFERED=1
-# 可选：从单独文件加载环境变量（chmod 600）
+# Optional: load secrets from a file (chmod 600)
 # EnvironmentFile=/opt/FastNodeSync-CLI/.env
 ExecStart=/usr/bin/python3 -m fns_cli.main run -c /opt/FastNodeSync-CLI/config.yaml
 Restart=always
 RestartSec=10
 
-# 安全加固（可选）
-# NoNewPrivileges=true
-# PrivateTmp=true
-
 [Install]
 WantedBy=multi-user.target
 ```
 
-启用并启动：
+Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable fns-cli    # 开机自启
-sudo systemctl start fns-cli     # 立即启动
-sudo systemctl status fns-cli    # 查看状态
+sudo systemctl enable fns-cli
+sudo systemctl start fns-cli
+sudo systemctl status fns-cli
 ```
 
-常用命令：
+Useful commands:
 
 ```bash
 sudo systemctl stop fns-cli
 sudo systemctl restart fns-cli
-journalctl -u fns-cli -f         # 实时日志
+journalctl -u fns-cli -f
 journalctl -u fns-cli --since today
 ```
 
-**说明：**
+**Notes**
 
-- `enable` 会在系统重启后自动拉起服务；依赖网络时 `After=network-online.target` 可减少「启动过早连不上服务器」的情况。
-- 确保 `your_user` 对 `watch_path`（vault 目录）有读写权限。
-- 上游服务端部署可参考 [fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 文档（Docker / 一键脚本等）。
+- `enable` registers the service for **automatic start after reboot**. `After=network-online.target` reduces races where the process starts before the network is ready.
+- Ensure `your_user` can read/write `watch_path` (the vault directory).
+- For deploying the upstream server, see [fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) (Docker, install script, etc.).
 
 ---
 
-## CLI 命令
+## CLI commands
 
-| 命令 | 说明 |
-|------|------|
-| `run`    | 持续运行：初始同步 + 监控本地变更 + 接收远端变更 |
-| `sync`   | 全量双向同步一次后退出 |
-| `pull`   | 仅拉取远端变更到本地后退出 |
-| `push`   | 推送所有本地文件到远端后退出 |
-| `status` | 显示配置和同步状态 |
+| Command | Description |
+|---------|-------------|
+| `run` | Long-running: initial sync + file watcher + receive remote updates |
+| `sync` | One-shot full bidirectional sync, then exit |
+| `pull` | Pull remote changes only, then exit |
+| `push` | Push all local files, then exit |
+| `status` | Show configuration and sync state |
 
-所有命令均支持 `-c / --config` 参数指定配置文件路径，默认为 `config.yaml`。
+All commands accept `-c` / `--config` (default: `config.yaml`).
 
 ```bash
 python -m fns_cli.main run -c config.yaml
@@ -214,32 +195,30 @@ python -m fns_cli.main push -c config.yaml
 python -m fns_cli.main status -c config.yaml
 ```
 
-## 同步行为说明
+## Sync behavior
 
-### `run` 模式的工作流程
+### `run` flow
 
 ```
-1. 连接 WebSocket → 认证
-2. 增量拉取远端变更（NoteSync + FileSync）
-3. 启动 watchdog 监控本地 vault 目录
-4. 持续双向同步：
-   - 远端修改 → 自动写入本地
-   - 本地修改 → 自动推送到服务器 → 服务器广播给其他客户端（Obsidian 等）
-   - 断线 → 自动重连 → 增量补全
+1. WebSocket connect → authenticate
+2. Incremental pull (NoteSync + FileSync)
+3. Start watchdog on the local vault
+4. Continuous bidirectional sync (remote → local, local → server → other clients)
+5. On disconnect → reconnect with backoff → incremental catch-up
 ```
 
-### 同步状态
+### State file
 
-同步进度保存在 `vault/.fns_state.json` 中（自动管理，无需手动修改）。重启后会从上次同步点继续增量同步，不会重复下载。
+Progress is stored in `vault/.fns_state.json` (managed automatically). After a restart, sync resumes incrementally from the last checkpoint.
 
-### 注意事项
+### Caveats
 
-- `vault` 名称必须与 Obsidian 插件端设置的 Vault 一致，否则文件不会互通
-- 首次 `run` 或 `pull` 会拉取远端所有文件，后续仅增量同步
-- 同一文件被多端同时修改时，以最后写入服务器的版本为准（服务端负责冲突处理）
-- `.fns_state.json` 文件不会被同步到远端
+- The `vault` name must match the Obsidian plugin setting.
+- First `run` or `pull` may download the full vault; later runs are incremental.
+- Concurrent edits on multiple devices: last write to the server wins (server-side conflict handling).
+- `.fns_state.json` is not uploaded to the server.
 
-## 相关项目
+## Related projects
 
-- [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) — 服务端
-- [obsidian-fast-note-sync](https://github.com/haierkeys/obsidian-fast-note-sync) — Obsidian 插件客户端
+- [Fast Note Sync Service](https://github.com/haierkeys/fast-note-sync-service) — backend
+- [obsidian-fast-note-sync](https://github.com/haierkeys/obsidian-fast-note-sync) — Obsidian plugin
