@@ -26,9 +26,23 @@ FastNodeSync-CLI/
 │   ├── protocol.py        # 消息编解码
 │   ├── state.py           # 状态持久化
 │   └── logger.py          # 日志
+├── tests/                 # 冒烟测试（unittest）
+├── .github/workflows/     # GitHub Actions CI
 ├── config.yaml            # 配置文件
 └── requirements.txt       # Python 依赖
 ```
+
+## 开发与 CI
+
+本地运行冒烟测试（无需额外依赖）：
+
+```bash
+# 在项目根目录
+set PYTHONPATH=.          # Linux/macOS: export PYTHONPATH=.
+python -m unittest discover -s tests -v
+```
+
+推送或向 `main` 发起 PR 时，GitHub Actions 会自动：安装依赖、`compileall`、`fns_cli.main --help`、运行 `tests/` 下的 unittest。
 
 ## 部署步骤
 
