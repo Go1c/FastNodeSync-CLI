@@ -1,0 +1,9 @@
+vault/
+__pycache__/
+*.pyc
+.fns_state.json
+fns_cli.log
+*.egg-info/
+dist/
+build/
+.env
