@@ -16,6 +16,7 @@ Obsidian 笔记双向实时同步的命令行客户端，配合 [Fast Note Sync 
 
 ```
 FastNodeSync-CLI/
+├── doc/                   # 文档（多语言 README）
 ├── fns_cli/
 │   ├── main.py           # CLI 入口
 │   ├── config.py          # 配置加载
