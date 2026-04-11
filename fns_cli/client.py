@@ -155,9 +155,9 @@ class WSClient:
             log.debug("Unhandled action: %s", msg.action)
 
     async def _handle_binary(self, raw: bytes) -> None:
-        if self._binary_handler and len(raw) > 42 and raw[:2] == b"BC":
+        if self._binary_handler and len(raw) > 42 and raw[:2] == b"00":
             try:
-                sid, idx, data = parse_binary_chunk(raw)
+                sid, idx, data = parse_binary_chunk(raw[2:])
                 await self._binary_handler(sid, idx, data)
             except Exception:
                 log.exception("Binary handler error")
