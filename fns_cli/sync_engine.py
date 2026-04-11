@@ -202,7 +202,7 @@ class SyncEngine:
 
         if self.config.sync.sync_files or self.config.sync.sync_config:
             await self.file_sync.request_sync()
-            await self._wait_file_sync(timeout=60)
+            await self._wait_file_sync(timeout=300)
 
     async def _wait_note_sync(self, timeout: float = 60) -> None:
         loop = asyncio.get_running_loop()
@@ -219,6 +219,16 @@ class SyncEngine:
         while not self.file_sync.is_sync_complete:
             if loop.time() > deadline:
                 log.warning("FileSync timed out after %.0fs", timeout)
+                break
+            await asyncio.sleep(0.5)
+        # After FileSyncEnd, wait for any in-flight chunk downloads to finish
+        dl_deadline = loop.time() + timeout
+        while self.file_sync._download_sessions:
+            if loop.time() > dl_deadline:
+                log.warning(
+                    "FileSync downloads timed out with %d sessions pending",
+                    len(self.file_sync._download_sessions),
+                )
                 break
             await asyncio.sleep(0.5)
 

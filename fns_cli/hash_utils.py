@@ -1,6 +1,5 @@
 """Hash utilities matching the Obsidian plugin's djb2-style algorithm."""
 
-import hashlib
 from pathlib import Path
 
 
@@ -27,9 +26,16 @@ def content_hash(text: str) -> str:
 
 
 def file_content_hash_binary(file_path: Path) -> str:
-    """SHA-256 hex digest for binary files (used by FileSync contentHash)."""
-    sha = hashlib.sha256()
+    """Compute djb2 hash over raw bytes, matching the plugin's hashArrayBuffer.
+
+    Same shift-and-add algorithm as hash_content but iterates over bytes
+    instead of characters, producing a signed 32-bit integer string.
+    """
+    h = 0
     with open(file_path, "rb") as f:
         while chunk := f.read(65536):
-            sha.update(chunk)
-    return sha.hexdigest()
+            for b in chunk:
+                h = ((h << 5) - h + b) & 0xFFFFFFFF
+                if h >= 0x80000000:
+                    h -= 0x100000000
+    return str(h)
