@@ -86,15 +86,22 @@ def decode_message(raw: str) -> WSMessage:
 
 
 def build_binary_chunk(session_id: str, chunk_index: int, data: bytes) -> bytes:
-    """Build the binary frame: b'BC' + sessionId(36B) + chunkIndex(4B BE) + data."""
-    prefix = b"BC"
+    """Build the binary frame: '00' prefix + sessionId(36B) + chunkIndex(4B BE) + data.
+
+    The 2-byte prefix '00' matches the server's VaultFileMsgType.
+    """
+    prefix = b"00"
     sid_bytes = session_id.encode("ascii")[:36].ljust(36, b"\x00")
     idx_bytes = chunk_index.to_bytes(4, byteorder="big")
     return prefix + sid_bytes + idx_bytes + data
 
 
 def parse_binary_chunk(raw: bytes) -> tuple[str, int, bytes]:
-    """Parse a binary frame → (session_id, chunk_index, data)."""
-    sid = raw[2:38].decode("ascii").rstrip("\x00")
-    chunk_index = int.from_bytes(raw[38:42], byteorder="big")
-    return sid, chunk_index, raw[42:]
+    """Parse a binary frame → (session_id, chunk_index, data).
+
+    Expects raw to start AFTER the 2-byte prefix (already stripped by the
+    caller in client._handle_binary).
+    """
+    sid = raw[0:36].decode("ascii").rstrip("\x00")
+    chunk_index = int.from_bytes(raw[36:40], byteorder="big")
+    return sid, chunk_index, raw[40:]
