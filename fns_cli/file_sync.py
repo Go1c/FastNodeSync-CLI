@@ -82,13 +82,14 @@ class FileSync:
         self._sync_complete = False
         last_time = self.engine.state.last_file_sync_time
         ctx = str(uuid.uuid4())
+        files = self._collect_local_files()
         msg = WSMessage(ACTION_FILE_SYNC, {
             "context": ctx,
             "vault": self.config.server.vault,
             "lastTime": last_time,
-            "files": [],
+            "files": files,
         })
-        log.info("Requesting FileSync (lastTime=%d)", last_time)
+        log.info("Requesting FileSync (lastTime=%d, localFiles=%d)", last_time, len(files))
         await self.engine.ws_client.send(msg)
 
     async def push_upload(self, rel_path: str) -> None:
@@ -162,8 +163,12 @@ class FileSync:
 
         if not rel_path:
             return
+
         if content is None:
-            log.debug("← FileSyncUpdate (no inline content, skipped): %s", rel_path)
+            # Attachment files: server sends metadata only, we must request
+            # a chunked download via FileChunkDownload.
+            log.info("← FileSyncUpdate (requesting chunk download): %s", rel_path)
+            await self._request_chunk_download(rel_path, data)
             return
 
         full = self.vault_path / rel_path
@@ -185,6 +190,15 @@ class FileSync:
             log.exception("Failed to write file %s", rel_path)
         finally:
             self.engine.unignore_file(rel_path)
+
+    async def _request_chunk_download(self, rel_path: str, data: dict) -> None:
+        """Send FileChunkDownload request for a file that needs chunked transfer."""
+        msg = WSMessage(ACTION_FILE_CHUNK_DOWNLOAD, {
+            "vault": self.config.server.vault,
+            "path": rel_path,
+            "pathHash": data.get("pathHash", path_hash(rel_path)),
+        })
+        await self.engine.ws_client.send(msg)
 
     async def _on_sync_delete(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -291,12 +305,45 @@ class FileSync:
             self.engine.state.last_file_sync_time = last_time
             self.engine.state.save()
 
-        self._sync_complete = True
+        need_modify = data.get("needModifyCount", 0)
+        need_delete = data.get("needDeleteCount", 0)
+        need_upload = data.get("needUploadCount", 0)
+
         log.info(
-            "← FileSyncEnd (lastTime=%d, needUpload=%d)",
-            last_time,
-            data.get("needUploadCount", 0),
+            "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
+            last_time, need_modify, need_delete, need_upload,
         )
+
+        # Mark sync complete — individual messages arrive after this.
+        # The sync_engine wait loop will keep running until this flag is set.
+        self._sync_complete = True
+
+    def _collect_local_files(self) -> list[dict]:
+        """Collect non-note, non-excluded local files with hashes for FileSync."""
+        files = []
+        for fp in self.vault_path.rglob("*"):
+            if fp.is_dir():
+                continue
+            rel = fp.relative_to(self.vault_path).as_posix()
+            if self.engine.is_excluded(rel) or rel.endswith(".md"):
+                continue
+            if rel.startswith(".obsidian/") and not self.config.sync.sync_config:
+                continue
+            if not rel.startswith(".obsidian/") and not self.config.sync.sync_files:
+                continue
+            try:
+                stat = fp.stat()
+                files.append({
+                    "path": rel,
+                    "pathHash": path_hash(rel),
+                    "contentHash": file_content_hash_binary(fp),
+                    "mtime": int(stat.st_mtime * 1000),
+                    "ctime": int(stat.st_ctime * 1000),
+                    "size": stat.st_size,
+                })
+            except Exception:
+                log.debug("Failed to hash file %s, skipping", rel)
+        return files
 
     def _try_remove_empty_parent(self, file_path: Path) -> None:
         parent = file_path.parent
