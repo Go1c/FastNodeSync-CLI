@@ -34,8 +34,10 @@ class WSClient:
         self._handlers: dict[str, Callable[..., Coroutine]] = {}
         self._binary_handler: Callable[..., Coroutine] | None = None
         self._on_reconnect: Callable[[], Coroutine] | None = None
+        self._reconnect_task: asyncio.Task | None = None
         self._msg_queue: list[str | bytes] = []
         self._ready_event = asyncio.Event()
+        self._send_lock = asyncio.Lock()
 
     def on_reconnect(self, handler: Callable[[], Coroutine]) -> None:
         self._on_reconnect = handler
@@ -60,13 +62,14 @@ class WSClient:
         await self._raw_send(data)
 
     async def _raw_send(self, data: str | bytes) -> None:
-        if self.ws is None:
-            self._msg_queue.append(data)
-            return
-        try:
-            await self.ws.send(data)
-        except websockets.ConnectionClosed:
-            self._msg_queue.append(data)
+        async with self._send_lock:
+            if self.ws is None:
+                self._msg_queue.append(data)
+                return
+            try:
+                await self.ws.send(data)
+            except websockets.ConnectionClosed:
+                self._msg_queue.append(data)
 
     async def _flush_queue(self) -> None:
         queue, self._msg_queue = self._msg_queue, []
@@ -121,24 +124,16 @@ class WSClient:
         )
         log.info("Connecting to %s", url)
 
-        # Heartbeat: the server sends Ping every 25s and closes the connection
-        # if it sees no frame within 60s (PingWait). The websockets library
-        # auto-responds to server pings with a pong, so the server's deadline
-        # is always refreshed as long as the connection is actually alive.
-        #
-        # We also send our own pings to detect the reverse case: a half-open
-        # TCP connection or a proxy that silently drops the server's pings.
-        # The interval/timeout are generous because the server's gws write
-        # queue can hold our Pong behind large binary frames during heavy
-        # chunk transfer — a 30s-or-less timeout false-triggers on initial
-        # sync. 45s + 90s gives roughly 135s worst-case dead-connection
-        # detection, which is comfortably past any observed Pong delay while
-        # still catching genuine network failures.
+        # The server already sends keepalive pings and will close dead
+        # connections on its side. During large attachment uploads, our own
+        # client-initiated ping/pong cycle causes false timeouts and forces an
+        # expensive reconnect + full resync loop, which then delays realtime
+        # local pushes even further. Rely on the server heartbeat here.
         self.ws = await websockets.connect(
             url,
             max_size=128 * 1024 * 1024,
-            ping_interval=45,
-            ping_timeout=90,
+            ping_interval=None,
+            ping_timeout=None,
             close_timeout=10,
         )
         log.info("WebSocket connected, sending auth")
@@ -169,7 +164,7 @@ class WSClient:
             except Exception:
                 log.exception("Handler error for %s", msg.action)
         else:
-            log.debug("Unhandled action: %s", msg.action)
+            log.warning("Unhandled action from server: %s", msg.action)
 
     async def _handle_binary(self, raw: bytes) -> None:
         if self._binary_handler and len(raw) > 42 and raw[:2] == b"00":
@@ -196,16 +191,24 @@ class WSClient:
             await self._flush_queue()
             self._ready_event.set()
             if self._connect_count > 1 and self._on_reconnect:
-                try:
-                    await self._on_reconnect()
-                except Exception:
-                    log.exception("Reconnect handler error")
+                if self._reconnect_task and not self._reconnect_task.done():
+                    self._reconnect_task.cancel()
+                self._reconnect_task = asyncio.create_task(self._run_reconnect_handler())
         else:
             err = data.get("msg", data.get("message", "unknown"))
             log.error("Authentication failed (code=%s): %s", code, err)
             self._running = False
             if self.ws:
                 await self.ws.close()
+
+    async def _run_reconnect_handler(self) -> None:
+        try:
+            assert self._on_reconnect is not None
+            await self._on_reconnect()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Reconnect handler error")
 
     async def wait_ready(self, timeout: float = 30) -> bool:
         try:
@@ -216,5 +219,7 @@ class WSClient:
 
     async def close(self) -> None:
         self._running = False
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
         if self.ws:
             await self.ws.close()

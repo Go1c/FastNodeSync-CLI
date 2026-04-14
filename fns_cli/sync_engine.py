@@ -10,6 +10,7 @@ from pathlib import Path
 from .client import WSClient
 from .config import AppConfig
 from .file_sync import FileSync
+from .folder_sync import FolderSync
 from .note_sync import NoteSync
 from .state import SyncState
 
@@ -24,6 +25,7 @@ class SyncEngine:
         self.state = SyncState.load(self.vault_path)
         self.note_sync = NoteSync(self)
         self.file_sync = FileSync(self)
+        self.folder_sync = FolderSync(self)
         self._ignored_files: set[str] = set()
         self._watch_enabled = False
 
@@ -89,6 +91,7 @@ class SyncEngine:
     def _register_handlers(self) -> None:
         self.note_sync.register_handlers()
         self.file_sync.register_handlers()
+        self.folder_sync.register_handlers()
 
     async def run(self) -> None:
         """Connect, do initial sync, then watch for changes indefinitely."""
@@ -227,6 +230,14 @@ class SyncEngine:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while not self.file_sync.is_sync_complete:
+            if self.file_sync.is_stalled(stale_seconds=5):
+                log.warning(
+                    "FileSync stalled after FileSyncEnd "
+                    "(expected=%d, received=%d); continuing with watcher enabled",
+                    self.file_sync._expected_modify + self.file_sync._expected_delete,
+                    self.file_sync._received_modify + self.file_sync._received_delete,
+                )
+                break
             if loop.time() > deadline:
                 log.warning("FileSync timed out after %.0fs", timeout)
                 break
