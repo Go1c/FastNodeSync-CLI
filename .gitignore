@@ -1,4 +1,6 @@
 vault/
+test-vault/
+test-config.yaml
 __pycache__/
 *.pyc
 .fns_state.json
@@ -7,3 +9,7 @@ fns_cli.log
 dist/
 build/
 .env
+
+# Local integration test artifacts — not committed
+test_sync_local.py
+test_sync_report.log

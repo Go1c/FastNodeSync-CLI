@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -30,6 +29,9 @@ if TYPE_CHECKING:
     from .sync_engine import SyncEngine
 
 log = logging.getLogger("fns_cli.file_sync")
+
+# Sentinel stored in _echo_hashes to mark a just-received delete.
+_DELETED = "__deleted__"
 
 
 def _extract_inner(msg_data: dict) -> dict:
@@ -68,6 +70,11 @@ class FileSync:
         self._received_modify = 0
         self._received_delete = 0
         self._got_end = False
+        # See NoteSync._echo_hashes — same semantics here. Updated on both
+        # inbound (server write / chunk finalize / rename / delete) and
+        # outbound (push_upload / push_delete) so the cache tracks the most
+        # recently known synced state, not just what the server pushed.
+        self._echo_hashes: dict[str, str] = {}
 
     @property
     def is_sync_complete(self) -> bool:
@@ -111,20 +118,29 @@ class FileSync:
         if not full.exists():
             return
 
+        hash_ = file_content_hash_binary(full)
+        if self._echo_hashes.get(rel_path) == hash_:
+            return
+
         stat = full.stat()
         msg = WSMessage(ACTION_FILE_UPLOAD_CHECK, {
             "vault": self.config.server.vault,
             "path": rel_path,
             "pathHash": path_hash(rel_path),
-            "contentHash": file_content_hash_binary(full),
+            "contentHash": hash_,
             "size": stat.st_size,
             "ctime": int(stat.st_ctime * 1000),
             "mtime": int(stat.st_mtime * 1000),
         })
         log.info("FileUploadCheck → %s (%d bytes)", rel_path, stat.st_size)
         await self.engine.ws_client.send(msg)
+        # Record the outbound hash so a later revert-to-previous-content
+        # still differs from the cache and triggers a real upload.
+        self._echo_hashes[rel_path] = hash_
 
     async def push_delete(self, rel_path: str) -> None:
+        if self._echo_hashes.get(rel_path) == _DELETED:
+            return
         msg = WSMessage(ACTION_FILE_DELETE, {
             "vault": self.config.server.vault,
             "path": rel_path,
@@ -132,6 +148,7 @@ class FileSync:
         })
         log.info("FileDelete → %s", rel_path)
         await self.engine.ws_client.send(msg)
+        self._echo_hashes[rel_path] = _DELETED
 
     # ── Server → Client handlers ─────────────────────────────────────
 
@@ -188,7 +205,6 @@ class FileSync:
             return
 
         full = self.vault_path / rel_path
-        self.engine.ignore_file(rel_path)
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
             if isinstance(content, str):
@@ -200,12 +216,12 @@ class FileSync:
             if mtime and full.exists():
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
+            # Record echo hash after the write is durable on disk.
+            if full.exists():
+                self._echo_hashes[rel_path] = file_content_hash_binary(full)
             log.info("← FileSyncUpdate: %s", rel_path)
         except Exception:
             log.exception("Failed to write file %s", rel_path)
-        finally:
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(rel_path)
 
         self._received_modify += 1
         self._check_complete()
@@ -224,8 +240,10 @@ class FileSync:
         rel_path: str = data.get("path", "")
         if not rel_path:
             return
+
+        self._echo_hashes[rel_path] = _DELETED
+
         full = self.vault_path / rel_path
-        self.engine.ignore_file(rel_path)
         try:
             if full.exists():
                 full.unlink()
@@ -233,9 +251,6 @@ class FileSync:
                 self._try_remove_empty_parent(full)
         except Exception:
             log.exception("Failed to delete file %s", rel_path)
-        finally:
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(rel_path)
 
         self._received_delete += 1
         self._check_complete()
@@ -247,21 +262,21 @@ class FileSync:
         if not old_path or not new_path:
             return
 
+        # The rename arrives as a single server message but the watcher will
+        # observe it as delete(old) + create(new). Prime the echo cache for
+        # both paths.
+        self._echo_hashes[old_path] = _DELETED
         old_full = self.vault_path / old_path
         new_full = self.vault_path / new_path
-        self.engine.ignore_file(old_path)
-        self.engine.ignore_file(new_path)
         try:
             if old_full.exists():
                 new_full.parent.mkdir(parents=True, exist_ok=True)
                 old_full.rename(new_full)
+                if new_full.exists():
+                    self._echo_hashes[new_path] = file_content_hash_binary(new_full)
                 log.info("← FileSyncRename: %s → %s", old_path, new_path)
         except Exception:
             log.exception("Failed to rename file %s → %s", old_path, new_path)
-        finally:
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(old_path)
-            self.engine.unignore_file(new_path)
 
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -309,19 +324,18 @@ class FileSync:
     async def _finalize_download(self, session_id: str, session: _DownloadSession) -> None:
         rel_path = session.path
         full = self.vault_path / rel_path
-        self.engine.ignore_file(rel_path)
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
             with open(full, "wb") as f:
                 for i in range(session.total_chunks):
                     f.write(session.chunks.get(i, b""))
+            if full.exists():
+                self._echo_hashes[rel_path] = file_content_hash_binary(full)
             log.info("← Chunked download complete: %s", rel_path)
         except Exception:
             log.exception("Failed to write downloaded file %s", rel_path)
         finally:
             self._download_sessions.pop(session_id, None)
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(rel_path)
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
