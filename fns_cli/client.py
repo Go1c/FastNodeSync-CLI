@@ -33,8 +33,12 @@ class WSClient:
         self._running = False
         self._handlers: dict[str, Callable[..., Coroutine]] = {}
         self._binary_handler: Callable[..., Coroutine] | None = None
+        self._on_reconnect: Callable[[], Coroutine] | None = None
         self._msg_queue: list[str | bytes] = []
         self._ready_event = asyncio.Event()
+
+    def on_reconnect(self, handler: Callable[[], Coroutine]) -> None:
+        self._on_reconnect = handler
 
     def on(self, action: str, handler: Callable[..., Coroutine]) -> None:
         self._handlers[action] = handler
@@ -178,6 +182,11 @@ class WSClient:
             await self._raw_send(client_info.encode())
             await self._flush_queue()
             self._ready_event.set()
+            if self._connect_count > 1 and self._on_reconnect:
+                try:
+                    await self._on_reconnect()
+                except Exception:
+                    log.exception("Reconnect handler error")
         else:
             err = data.get("msg", data.get("message", "unknown"))
             log.error("Authentication failed (code=%s): %s", code, err)

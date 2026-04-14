@@ -62,6 +62,11 @@ class FileSync:
         self.vault_path = engine.vault_path
         self._sync_complete = False
         self._download_sessions: dict[str, _DownloadSession] = {}
+        self._expected_modify = 0
+        self._expected_delete = 0
+        self._received_modify = 0
+        self._received_delete = 0
+        self._got_end = False
 
     @property
     def is_sync_complete(self) -> bool:
@@ -78,8 +83,16 @@ class FileSync:
         ws.on(ACTION_FILE_SYNC_END, self._on_sync_end)
         ws.on_binary(self._on_binary_chunk)
 
-    async def request_sync(self) -> None:
+    def _reset_counters(self) -> None:
         self._sync_complete = False
+        self._got_end = False
+        self._expected_modify = 0
+        self._expected_delete = 0
+        self._received_modify = 0
+        self._received_delete = 0
+
+    async def request_sync(self) -> None:
+        self._reset_counters()
         last_time = self.engine.state.last_file_sync_time
         ctx = str(uuid.uuid4())
         files = self._collect_local_files()
@@ -169,6 +182,8 @@ class FileSync:
             # a chunked download via FileChunkDownload.
             log.info("← FileSyncUpdate (requesting chunk download): %s", rel_path)
             await self._request_chunk_download(rel_path, data)
+            self._received_modify += 1
+            self._check_complete()
             return
 
         full = self.vault_path / rel_path
@@ -181,7 +196,6 @@ class FileSync:
                 full.write_bytes(content)
             else:
                 log.warning("Unexpected content type for %s: %s", rel_path, type(content))
-                return
             if mtime and full.exists():
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
@@ -190,6 +204,9 @@ class FileSync:
             log.exception("Failed to write file %s", rel_path)
         finally:
             self.engine.unignore_file(rel_path)
+
+        self._received_modify += 1
+        self._check_complete()
 
     async def _request_chunk_download(self, rel_path: str, data: dict) -> None:
         """Send FileChunkDownload request for a file that needs chunked transfer."""
@@ -216,6 +233,9 @@ class FileSync:
             log.exception("Failed to delete file %s", rel_path)
         finally:
             self.engine.unignore_file(rel_path)
+
+        self._received_delete += 1
+        self._check_complete()
 
     async def _on_sync_rename(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -305,18 +325,33 @@ class FileSync:
             self.engine.state.last_file_sync_time = last_time
             self.engine.state.save()
 
-        need_modify = data.get("needModifyCount", 0)
-        need_delete = data.get("needDeleteCount", 0)
+        self._expected_modify = data.get("needModifyCount", 0)
+        self._expected_delete = data.get("needDeleteCount", 0)
         need_upload = data.get("needUploadCount", 0)
 
+        self._got_end = True
         log.info(
             "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
-            last_time, need_modify, need_delete, need_upload,
+            last_time, self._expected_modify, self._expected_delete, need_upload,
         )
 
-        # Mark sync complete — individual messages arrive after this.
-        # The sync_engine wait loop will keep running until this flag is set.
-        self._sync_complete = True
+        total = self._expected_modify + self._expected_delete
+        if total == 0:
+            self._sync_complete = True
+        else:
+            self._check_complete()
+
+    def _check_complete(self) -> None:
+        if not self._got_end:
+            return
+        total_expected = self._expected_modify + self._expected_delete
+        total_received = self._received_modify + self._received_delete
+        if total_received >= total_expected:
+            log.info(
+                "FileSync complete: %d modified, %d deleted",
+                self._received_modify, self._received_delete,
+            )
+            self._sync_complete = True
 
     def _collect_local_files(self) -> list[dict]:
         """Collect non-note, non-excluded local files with hashes for FileSync."""
