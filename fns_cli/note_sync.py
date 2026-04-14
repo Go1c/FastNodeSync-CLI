@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -27,6 +26,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("fns_cli.note_sync")
 
+# Sentinel stored in _echo_hashes to mark a just-received delete.
+_DELETED = "__deleted__"
+
 
 def _extract_inner(msg_data: dict) -> dict:
     """Server wraps payloads as {code, status, message, data: {actual fields}}."""
@@ -48,6 +50,24 @@ class NoteSync:
         self._received_modify = 0
         self._received_delete = 0
         self._got_end = False
+        # Per-path "last known synced state" — updated on BOTH inbound
+        # (server → local write) and outbound (local → server push). Value
+        # is the content hash, or _DELETED sentinel for an absent file.
+        #
+        # Push flow:  if current hash == cache → skip (echo); else push and
+        #             update cache to the new hash/tombstone.
+        # Receive flow: after applying the server change to disk, update the
+        #               cache to match the new on-disk state.
+        #
+        # Updating on *outbound* is critical for two cases the inbound-only
+        # cache got wrong:
+        #   * revert: server=A → user edits to B, push → user reverts to A.
+        #     Without outbound update the cache still reads A and the revert
+        #     push is dropped as an echo.
+        #   * tombstone reuse: server deletes → user recreates same path.
+        #     Without outbound update the later local delete is dropped
+        #     because the cache still holds _DELETED.
+        self._echo_hashes: dict[str, str] = {}
 
     @property
     def is_sync_complete(self) -> bool:
@@ -89,7 +109,7 @@ class NoteSync:
         log.info("Requesting full NoteSync with %d local notes", len(notes))
         await self.engine.ws_client.send(msg)
 
-    async def push_modify(self, rel_path: str) -> None:
+    async def push_modify(self, rel_path: str, *, force: bool = False) -> None:
         full = self.vault_path / rel_path
         if not full.exists():
             return
@@ -99,20 +119,29 @@ class NoteSync:
             log.exception("Failed to read %s", rel_path)
             return
 
+        hash_ = content_hash(text)
+        if not force and self._echo_hashes.get(rel_path) == hash_:
+            return
+
         stat = full.stat()
         msg = WSMessage(ACTION_NOTE_MODIFY, {
             "vault": self.config.server.vault,
             "path": rel_path,
             "pathHash": path_hash(rel_path),
             "content": text,
-            "contentHash": content_hash(text),
+            "contentHash": hash_,
             "ctime": int(stat.st_ctime * 1000),
             "mtime": int(stat.st_mtime * 1000),
         })
         log.info("NoteModify → %s", rel_path)
         await self.engine.ws_client.send(msg)
+        # Record the outbound hash so an echoed broadcast from the server
+        # (or a repeated watcher event from our own write) is recognized.
+        self._echo_hashes[rel_path] = hash_
 
     async def push_delete(self, rel_path: str) -> None:
+        if self._echo_hashes.get(rel_path) == _DELETED:
+            return
         msg = WSMessage(ACTION_NOTE_DELETE, {
             "vault": self.config.server.vault,
             "path": rel_path,
@@ -120,6 +149,7 @@ class NoteSync:
         })
         log.info("NoteDelete → %s", rel_path)
         await self.engine.ws_client.send(msg)
+        self._echo_hashes[rel_path] = _DELETED
 
     async def push_rename(self, new_rel: str, old_rel: str) -> None:
         await self.push_modify(new_rel)
@@ -137,19 +167,17 @@ class NoteSync:
             return
 
         full = self.vault_path / rel_path
-        self.engine.ignore_file(rel_path)
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
             full.write_text(content, encoding="utf-8")
             if mtime:
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
+            # Update the cache only after the new content is durable on disk.
+            self._echo_hashes[rel_path] = content_hash(content)
             log.info("← NoteSyncModify: %s", rel_path)
         except Exception:
             log.exception("Failed to write %s", rel_path)
-        finally:
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(rel_path)
 
         self._received_modify += 1
         self._check_all_received()
@@ -159,18 +187,18 @@ class NoteSync:
         rel_path: str = data.get("path", "")
         if not rel_path:
             return
+
         full = self.vault_path / rel_path
-        self.engine.ignore_file(rel_path)
         try:
             if full.exists():
                 full.unlink()
                 log.info("← NoteSyncDelete: %s", rel_path)
                 self._try_remove_empty_parent(full)
+            # Whether the file existed or not, the on-disk state is now
+            # "absent" if we got here without an exception.
+            self._echo_hashes[rel_path] = _DELETED
         except Exception:
             log.exception("Failed to delete %s", rel_path)
-        finally:
-            await asyncio.sleep(0.6)
-            self.engine.unignore_file(rel_path)
 
         self._received_delete += 1
         self._check_all_received()
@@ -195,7 +223,9 @@ class NoteSync:
         if not rel_path:
             return
         log.info("← NoteSyncNeedPush: %s", rel_path)
-        await self.push_modify(rel_path)
+        # NeedPush is an explicit server request to re-send the local content;
+        # it must bypass the normal echo suppression check.
+        await self.push_modify(rel_path, force=True)
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

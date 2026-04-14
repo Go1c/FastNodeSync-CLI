@@ -1,10 +1,9 @@
-"""WebSocket client: connect, authenticate, send/receive, reconnect, heartbeat."""
+"""WebSocket client: connect, authenticate, send/receive, reconnect."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any, Callable, Coroutine
 
 import websockets
@@ -37,7 +36,6 @@ class WSClient:
         self._on_reconnect: Callable[[], Coroutine] | None = None
         self._msg_queue: list[str | bytes] = []
         self._ready_event = asyncio.Event()
-        self._last_received_at: float = 0.0
 
     def on_reconnect(self, handler: Callable[[], Coroutine]) -> None:
         self._on_reconnect = handler
@@ -123,14 +121,26 @@ class WSClient:
         )
         log.info("Connecting to %s", url)
 
+        # Heartbeat: the server sends Ping every 25s and closes the connection
+        # if it sees no frame within 60s (PingWait). The websockets library
+        # auto-responds to server pings with a pong, so the server's deadline
+        # is always refreshed as long as the connection is actually alive.
+        #
+        # We also send our own pings to detect the reverse case: a half-open
+        # TCP connection or a proxy that silently drops the server's pings.
+        # The interval/timeout are generous because the server's gws write
+        # queue can hold our Pong behind large binary frames during heavy
+        # chunk transfer — a 30s-or-less timeout false-triggers on initial
+        # sync. 45s + 90s gives roughly 135s worst-case dead-connection
+        # detection, which is comfortably past any observed Pong delay while
+        # still catching genuine network failures.
         self.ws = await websockets.connect(
             url,
             max_size=128 * 1024 * 1024,
-            ping_interval=None,
-            ping_timeout=None,
+            ping_interval=45,
+            ping_timeout=90,
             close_timeout=10,
         )
-        self._last_received_at = time.monotonic()
         log.info("WebSocket connected, sending auth")
 
         auth_raw = f"{ACTION_AUTHORIZATION}{SEPARATOR}{self.config.server.token}"
@@ -138,33 +148,13 @@ class WSClient:
 
     async def _listen(self) -> None:
         assert self.ws is not None
-        watchdog = asyncio.create_task(self._inactivity_watchdog())
-        try:
-            async for raw in self.ws:
-                if isinstance(raw, bytes):
-                    await self._handle_binary(raw)
-                else:
-                    await self._handle_text(raw)
-        finally:
-            watchdog.cancel()
-
-    async def _inactivity_watchdog(self) -> None:
-        """Close the connection if no message is received for 2 × heartbeat_interval."""
-        interval = self.config.client.heartbeat_interval
-        deadline = interval * 2
-        while True:
-            await asyncio.sleep(interval)
-            idle = time.monotonic() - self._last_received_at
-            if idle >= deadline:
-                log.warning(
-                    "No data received for %.0fs — closing for reconnect", idle
-                )
-                if self.ws:
-                    await self.ws.close()
-                return
+        async for raw in self.ws:
+            if isinstance(raw, bytes):
+                await self._handle_binary(raw)
+            else:
+                await self._handle_text(raw)
 
     async def _handle_text(self, raw: str) -> None:
-        self._last_received_at = time.monotonic()
         msg = decode_message(raw)
         log.debug("← %s | %s", msg.action, str(msg.data)[:200])
 
@@ -182,7 +172,6 @@ class WSClient:
             log.debug("Unhandled action: %s", msg.action)
 
     async def _handle_binary(self, raw: bytes) -> None:
-        self._last_received_at = time.monotonic()
         if self._binary_handler and len(raw) > 42 and raw[:2] == b"00":
             try:
                 sid, idx, data = parse_binary_chunk(raw[2:])
