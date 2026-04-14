@@ -208,7 +208,7 @@ class SyncEngine:
     async def _initial_sync(self) -> None:
         if self.config.sync.sync_notes:
             await self.note_sync.request_sync()
-            await self._wait_note_sync(timeout=60)
+            await self._wait_note_sync(timeout=300)
 
         if self.config.sync.sync_files or self.config.sync.sync_config:
             await self.file_sync.request_sync()
