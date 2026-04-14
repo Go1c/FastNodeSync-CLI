@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -203,6 +204,7 @@ class FileSync:
         except Exception:
             log.exception("Failed to write file %s", rel_path)
         finally:
+            await asyncio.sleep(0.6)
             self.engine.unignore_file(rel_path)
 
         self._received_modify += 1
@@ -232,6 +234,7 @@ class FileSync:
         except Exception:
             log.exception("Failed to delete file %s", rel_path)
         finally:
+            await asyncio.sleep(0.6)
             self.engine.unignore_file(rel_path)
 
         self._received_delete += 1
@@ -256,6 +259,7 @@ class FileSync:
         except Exception:
             log.exception("Failed to rename file %s → %s", old_path, new_path)
         finally:
+            await asyncio.sleep(0.6)
             self.engine.unignore_file(old_path)
             self.engine.unignore_file(new_path)
 
@@ -315,8 +319,9 @@ class FileSync:
         except Exception:
             log.exception("Failed to write downloaded file %s", rel_path)
         finally:
-            self.engine.unignore_file(rel_path)
             self._download_sessions.pop(session_id, None)
+            await asyncio.sleep(0.6)
+            self.engine.unignore_file(rel_path)
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

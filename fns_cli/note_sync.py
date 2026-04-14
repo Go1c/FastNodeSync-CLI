@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -147,6 +148,7 @@ class NoteSync:
         except Exception:
             log.exception("Failed to write %s", rel_path)
         finally:
+            await asyncio.sleep(0.6)
             self.engine.unignore_file(rel_path)
 
         self._received_modify += 1
@@ -167,6 +169,7 @@ class NoteSync:
         except Exception:
             log.exception("Failed to delete %s", rel_path)
         finally:
+            await asyncio.sleep(0.6)
             self.engine.unignore_file(rel_path)
 
         self._received_delete += 1
