@@ -100,6 +100,14 @@ class SyncEngine:
         from .watcher import VaultWatcher
         watcher = VaultWatcher(self, loop)
 
+        async def _on_reconnect() -> None:
+            log.info("Reconnected — re-syncing")
+            self._watch_enabled = False
+            await self._initial_sync()
+            self._watch_enabled = True
+
+        self.ws_client.on_reconnect(_on_reconnect)
+
         ws_task = asyncio.create_task(self.ws_client.run())
 
         try:
@@ -133,11 +141,13 @@ class SyncEngine:
                 log.error("Failed to authenticate within 30s")
                 return
 
-            await self._initial_sync()
-
             if self.config.sync.sync_notes:
                 await self.note_sync.request_full_sync()
                 await self._wait_note_sync(timeout=120)
+
+            if self.config.sync.sync_files or self.config.sync.sync_config:
+                await self.file_sync.request_sync()
+                await self._wait_file_sync(timeout=300)
         finally:
             await self.ws_client.close()
             ws_task.cancel()
