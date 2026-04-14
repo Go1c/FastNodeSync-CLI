@@ -382,8 +382,12 @@ class FileSync:
 
     def _try_remove_empty_parent(self, file_path: Path) -> None:
         parent = file_path.parent
-        try:
-            if parent != self.vault_path and parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-        except OSError:
-            pass
+        while parent != self.vault_path:
+            try:
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+                else:
+                    break
+            except OSError:
+                break
+            parent = parent.parent
