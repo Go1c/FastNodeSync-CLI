@@ -33,9 +33,17 @@ class _VaultEventHandler(FileSystemEventHandler):
         self.engine = engine
         self.loop = loop
         self._pending: dict[str, asyncio.TimerHandle] = {}
+        self._known_files: set[str] = set()
+        self._seed_known_files()
 
     def _rel(self, abs_path: str) -> str:
         return Path(abs_path).relative_to(self.engine.vault_path).as_posix()
+
+    def _rel_or_none(self, abs_path: str) -> str | None:
+        try:
+            return self._rel(abs_path)
+        except ValueError:
+            return None
 
     def _schedule(self, key: str, coro_factory):
         handle = self._pending.pop(key, None)
@@ -48,6 +56,22 @@ class _VaultEventHandler(FileSystemEventHandler):
 
         self._pending[key] = self.loop.call_later(DEBOUNCE_SECONDS, _fire)
 
+    def _seed_known_files(self) -> None:
+        for fp in self.engine.vault_path.rglob("*"):
+            if not fp.is_file():
+                continue
+            rel = fp.relative_to(self.engine.vault_path).as_posix()
+            if self.engine.is_excluded(rel):
+                continue
+            self._known_files.add(rel)
+
+    def _track_file(self, rel_path: str) -> None:
+        if not self.engine.is_excluded(rel_path):
+            self._known_files.add(rel_path)
+
+    def _untrack_file(self, rel_path: str) -> None:
+        self._known_files.discard(rel_path)
+
     # ── watchdog callbacks (called from observer thread) ─────────────
 
     def on_created(self, event):
@@ -59,6 +83,7 @@ class _VaultEventHandler(FileSystemEventHandler):
             return
         if self.engine.is_ignored(rel) or self.engine.is_excluded(rel):
             return
+        self._track_file(rel)
         self._schedule(f"mod:{rel}", lambda: self.engine.on_local_change(rel))
 
     def on_modified(self, event):
@@ -70,15 +95,12 @@ class _VaultEventHandler(FileSystemEventHandler):
             return
         if self.engine.is_ignored(rel) or self.engine.is_excluded(rel):
             return
+        self._track_file(rel)
         self._schedule(f"mod:{rel}", lambda: self.engine.on_local_change(rel))
 
     def on_deleted(self, event):
-        # Directory delete: watchdog on most platforms already fires per-file
-        # delete events for children before the directory event, so we only
-        # need to process individual files here. If a platform skips those
-        # child events we cannot reconstruct them (the files are already
-        # gone), so there is nothing more we can do at this layer.
         if event.is_directory:
+            self._handle_directory_delete(event)
             return
         try:
             rel = self._rel(event.src_path)
@@ -86,6 +108,7 @@ class _VaultEventHandler(FileSystemEventHandler):
             return
         if self.engine.is_ignored(rel) or self.engine.is_excluded(rel):
             return
+        self._untrack_file(rel)
         self._schedule(f"del:{rel}", lambda: self.engine.on_local_delete(rel))
 
     def on_moved(self, event):
@@ -97,12 +120,38 @@ class _VaultEventHandler(FileSystemEventHandler):
             # computing each old path by swapping the renamed prefix.
             self._handle_directory_move(event)
             return
-        try:
-            old_rel = self._rel(event.src_path)
-            new_rel = self._rel(event.dest_path)
-        except ValueError:
+        old_rel = self._rel_or_none(event.src_path)
+        new_rel = self._rel_or_none(event.dest_path)
+        if old_rel is None and new_rel is None:
+            return
+        if old_rel is None:
+            if self.engine.is_ignored(new_rel) or self.engine.is_excluded(new_rel):
+                return
+            self._track_file(new_rel)
+            self._schedule(f"mod:{new_rel}", lambda n=new_rel: self.engine.on_local_change(n))
+            return
+        if new_rel is None:
+            if self.engine.is_ignored(old_rel) or self.engine.is_excluded(old_rel):
+                return
+            self._untrack_file(old_rel)
+            self._schedule(f"del:{old_rel}", lambda o=old_rel: self.engine.on_local_delete(o))
             return
         self._schedule_move_transition(old_rel, new_rel)
+
+    def _handle_directory_delete(self, event) -> None:
+        rel_dir = self._rel_or_none(event.src_path)
+        if rel_dir is None:
+            return
+        prefix = f"{rel_dir}/"
+        victims = sorted(
+            rel for rel in self._known_files
+            if rel == rel_dir or rel.startswith(prefix)
+        )
+        for rel in victims:
+            if self.engine.is_ignored(rel) or self.engine.is_excluded(rel):
+                continue
+            self._untrack_file(rel)
+            self._schedule(f"del:{rel}", lambda p=rel: self.engine.on_local_delete(p))
 
     def _handle_directory_move(self, event) -> None:
         """Enumerate a renamed directory's children and schedule per-file renames."""
@@ -137,20 +186,25 @@ class _VaultEventHandler(FileSystemEventHandler):
         new_excluded = self.engine.is_excluded(new_rel)
 
         if old_excluded and new_excluded:
+            self._untrack_file(old_rel)
             return
         if not old_excluded and new_excluded:
+            self._untrack_file(old_rel)
             self._schedule(
                 f"del:{old_rel}",
                 lambda o=old_rel: self.engine.on_local_delete(o),
             )
             return
         if old_excluded and not new_excluded:
+            self._track_file(new_rel)
             self._schedule(
                 f"mod:{new_rel}",
                 lambda n=new_rel: self.engine.on_local_change(n),
             )
             return
 
+        self._untrack_file(old_rel)
+        self._track_file(new_rel)
         self._schedule(
             f"mv:{old_rel}:{new_rel}",
             lambda o=old_rel, n=new_rel: self.engine.on_local_rename(n, o),
