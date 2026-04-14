@@ -91,7 +91,11 @@ class _VaultEventHandler(FileSystemEventHandler):
             new_rel = self._rel(event.dest_path)
         except ValueError:
             return
-        if self.engine.is_excluded(new_rel):
+        if (
+            self.engine.is_ignored(old_rel)
+            or self.engine.is_ignored(new_rel)
+            or self.engine.is_excluded(new_rel)
+        ):
             return
         self._schedule(
             f"mv:{old_rel}:{new_rel}",
