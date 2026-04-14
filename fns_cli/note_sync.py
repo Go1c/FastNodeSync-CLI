@@ -18,6 +18,7 @@ from .protocol import (
     ACTION_NOTE_SYNC_MODIFY,
     ACTION_NOTE_SYNC_MTIME,
     ACTION_NOTE_SYNC_NEED_PUSH,
+    ACTION_NOTE_SYNC_RENAME,
     WSMessage,
 )
 
@@ -50,6 +51,7 @@ class NoteSync:
         self._received_modify = 0
         self._received_delete = 0
         self._got_end = False
+        self._pending_last_time = 0
         # Per-path "last known synced state" — updated on BOTH inbound
         # (server → local write) and outbound (local → server push). Value
         # is the content hash, or _DELETED sentinel for an absent file.
@@ -77,6 +79,7 @@ class NoteSync:
         ws = self.engine.ws_client
         ws.on(ACTION_NOTE_SYNC_MODIFY, self._on_sync_modify)
         ws.on(ACTION_NOTE_SYNC_DELETE, self._on_sync_delete)
+        ws.on(ACTION_NOTE_SYNC_RENAME, self._on_sync_rename)
         ws.on(ACTION_NOTE_SYNC_MTIME, self._on_sync_mtime)
         ws.on(ACTION_NOTE_SYNC_NEED_PUSH, self._on_sync_need_push)
         ws.on(ACTION_NOTE_SYNC_END, self._on_sync_end)
@@ -203,6 +206,32 @@ class NoteSync:
         self._received_delete += 1
         self._check_all_received()
 
+    async def _on_sync_rename(self, msg: WSMessage) -> None:
+        data = _extract_inner(msg.data)
+        old_path: str = data.get("oldPath", "")
+        new_path: str = data.get("path", "")
+        if not old_path or not new_path:
+            return
+
+        self._echo_hashes[old_path] = _DELETED
+
+        old_full = self.vault_path / old_path
+        new_full = self.vault_path / new_path
+        try:
+            if old_full.exists():
+                new_full.parent.mkdir(parents=True, exist_ok=True)
+                old_full.rename(new_full)
+                try:
+                    text = new_full.read_text(encoding="utf-8")
+                except Exception:
+                    log.exception("Failed to read renamed note %s", new_path)
+                else:
+                    self._echo_hashes[new_path] = content_hash(text)
+                log.info("← NoteSyncRename: %s → %s", old_path, new_path)
+                self._try_remove_empty_parent(old_full)
+        except Exception:
+            log.exception("Failed to rename %s → %s", old_path, new_path)
+
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
@@ -232,10 +261,7 @@ class NoteSync:
         last_time = data.get("lastTime", 0)
         self._expected_modify = data.get("needModifyCount", 0)
         self._expected_delete = data.get("needDeleteCount", 0)
-
-        if last_time:
-            self.engine.state.last_note_sync_time = last_time
-            self.engine.state.save()
+        self._pending_last_time = last_time
 
         self._got_end = True
         log.info(
@@ -249,6 +275,7 @@ class NoteSync:
         total_expected = self._expected_modify + self._expected_delete
         if total_expected == 0:
             self._sync_complete = True
+            self._commit_last_time()
         else:
             self._check_all_received()
 
@@ -261,6 +288,7 @@ class NoteSync:
         self._expected_delete = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._pending_last_time = 0
 
     def _check_all_received(self) -> None:
         if not self._got_end:
@@ -274,6 +302,14 @@ class NoteSync:
                 self._received_delete,
             )
             self._sync_complete = True
+            self._commit_last_time()
+
+    def _commit_last_time(self) -> None:
+        if self._pending_last_time:
+            log.info("Committing note lastTime=%d", self._pending_last_time)
+            self.engine.state.last_note_sync_time = self._pending_last_time
+            self.engine.state.save()
+            self._pending_last_time = 0
 
     def _try_remove_empty_parent(self, file_path: Path) -> None:
         parent = file_path.parent

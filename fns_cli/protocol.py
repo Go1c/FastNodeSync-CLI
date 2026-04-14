@@ -44,8 +44,12 @@ ACTION_FILE_SYNC_RENAME = "FileSyncRename"
 ACTION_FILE_SYNC_MTIME = "FileSyncMtime"
 ACTION_FILE_SYNC_CHUNK_DOWNLOAD = "FileSyncChunkDownload"
 ACTION_FILE_UPLOAD = "FileUpload"
+ACTION_FILE_UPLOAD_ACK = "FileUploadAck"
 ACTION_FILE_SYNC_END = "FileSyncEnd"
 
+ACTION_FOLDER_SYNC_MODIFY = "FolderSyncModify"
+ACTION_FOLDER_SYNC_DELETE = "FolderSyncDelete"
+ACTION_FOLDER_SYNC_RENAME = "FolderSyncRename"
 ACTION_FOLDER_SYNC_END = "FolderSyncEnd"
 
 # ── Status codes ──────────────────────────────────────────────────────

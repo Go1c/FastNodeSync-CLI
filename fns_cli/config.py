@@ -20,6 +20,7 @@ class SyncConfig:
     sync_notes: bool = True
     sync_files: bool = True
     sync_config: bool = True
+    upload_concurrency: int = 2
     exclude_patterns: list[str] = field(
         default_factory=lambda: [".git/**", ".trash/**", "*.tmp"]
     )
@@ -85,6 +86,7 @@ def load_config(path: str) -> AppConfig:
             sync_notes=s.get("sync_notes", True),
             sync_files=s.get("sync_files", True),
             sync_config=s.get("sync_config", True),
+            upload_concurrency=max(1, s.get("upload_concurrency", 2)),
             exclude_patterns=s.get(
                 "exclude_patterns", [".git/**", ".trash/**", "*.tmp"]
             ),
