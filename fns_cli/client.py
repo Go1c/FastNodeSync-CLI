@@ -121,11 +121,12 @@ class WSClient:
         )
         log.info("Connecting to %s", url)
 
+        interval = self.config.client.heartbeat_interval
         self.ws = await websockets.connect(
             url,
             max_size=128 * 1024 * 1024,
-            ping_interval=None,
-            ping_timeout=None,
+            ping_interval=interval,
+            ping_timeout=interval,
             close_timeout=10,
         )
         log.info("WebSocket connected, sending auth")
