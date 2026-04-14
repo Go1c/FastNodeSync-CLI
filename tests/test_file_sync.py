@@ -179,11 +179,18 @@ class TestFileSyncDeleteCounter(unittest.IsolatedAsyncioTestCase):
 class TestFileSyncWatcherIgnore(unittest.TestCase):
     """Watcher on_moved must honour is_ignored to avoid echo-backs."""
 
-    def _make_handler(self, vault: Path, ignored: set[str]):
+    def _make_handler(
+        self,
+        vault: Path,
+        ignored: set[str],
+        excluded: set[str] | None = None,
+    ):
         from fns_cli.watcher import _VaultEventHandler
 
         engine = _make_engine(vault)
         engine.is_ignored = lambda rel: rel in ignored
+        excluded = excluded or set()
+        engine.is_excluded = lambda rel: rel in excluded
         loop = asyncio.new_event_loop()
         handler = _VaultEventHandler(engine, loop)
         return handler, engine, loop
@@ -227,6 +234,52 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             self.assertIn("mv:old.png:new.png", handler._pending)
             # cancel to avoid loop cleanup issues
             handler._pending["mv:old.png:new.png"].cancel()
+            loop.close()
+
+    def test_move_into_excluded_schedules_delete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            handler, engine, loop = self._make_handler(
+                vault,
+                set(),
+                {"trash/new.png"},
+            )
+
+            from watchdog.events import FileMovedEvent
+            ev = FileMovedEvent(
+                str(vault / "old.png"),
+                str(vault / "trash" / "new.png"),
+            )
+            handler.on_moved(ev)
+
+            self.assertIn("del:old.png", handler._pending)
+            handler._pending["del:old.png"].cancel()
+            loop.close()
+
+    def test_directory_move_into_excluded_schedules_child_deletes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / "trash" / "renamed").mkdir(parents=True)
+            (vault / "trash" / "renamed" / "a.txt").write_text("a", encoding="utf-8")
+            (vault / "trash" / "renamed" / "b.txt").write_text("b", encoding="utf-8")
+
+            handler, engine, loop = self._make_handler(
+                vault,
+                set(),
+                {"trash/renamed/a.txt", "trash/renamed/b.txt"},
+            )
+
+            from watchdog.events import DirMovedEvent
+            ev = DirMovedEvent(
+                str(vault / "old"),
+                str(vault / "trash" / "renamed"),
+            )
+            handler.on_moved(ev)
+
+            self.assertIn("del:old/a.txt", handler._pending)
+            self.assertIn("del:old/b.txt", handler._pending)
+            handler._pending["del:old/a.txt"].cancel()
+            handler._pending["del:old/b.txt"].cancel()
             loop.close()
 
 
