@@ -12,6 +12,7 @@ from .config import AppConfig
 from .file_sync import FileSync
 from .folder_sync import FolderSync
 from .note_sync import NoteSync
+from .setting_sync import SettingSync
 from .state import SyncState
 
 log = logging.getLogger("fns_cli.sync_engine")
@@ -26,6 +27,7 @@ class SyncEngine:
         self.note_sync = NoteSync(self)
         self.file_sync = FileSync(self)
         self.folder_sync = FolderSync(self)
+        self.setting_sync = SettingSync(self)
         self._ignored_files: set[str] = set()
         self._watch_enabled = False
 
@@ -50,13 +52,14 @@ class SyncEngine:
         return rel_path.endswith(".md")
 
     def _is_config(self, rel_path: str) -> bool:
-        return rel_path.startswith(".obsidian/")
+        first = rel_path.split("/")[0]
+        return first.startswith(".")
 
     def _should_sync_file(self, rel_path: str) -> bool:
-        if self._is_note(rel_path):
-            return self.config.sync.sync_notes
         if self._is_config(rel_path):
             return self.config.sync.sync_config
+        if self._is_note(rel_path):
+            return self.config.sync.sync_notes
         return self.config.sync.sync_files
 
     # ── Local change callbacks (from watcher) ────────────────────────
@@ -64,7 +67,9 @@ class SyncEngine:
     async def on_local_change(self, rel_path: str) -> None:
         if not self._watch_enabled or not self._should_sync_file(rel_path):
             return
-        if self._is_note(rel_path):
+        if self._is_config(rel_path):
+            await self.setting_sync.push_modify(rel_path)
+        elif self._is_note(rel_path):
             await self.note_sync.push_modify(rel_path)
         else:
             await self.file_sync.push_upload(rel_path)
@@ -72,7 +77,9 @@ class SyncEngine:
     async def on_local_delete(self, rel_path: str) -> None:
         if not self._watch_enabled or not self._should_sync_file(rel_path):
             return
-        if self._is_note(rel_path):
+        if self._is_config(rel_path):
+            await self.setting_sync.push_delete(rel_path)
+        elif self._is_note(rel_path):
             await self.note_sync.push_delete(rel_path)
         else:
             await self.file_sync.push_delete(rel_path)
@@ -80,7 +87,9 @@ class SyncEngine:
     async def on_local_rename(self, new_rel: str, old_rel: str) -> None:
         if not self._watch_enabled:
             return
-        if self._is_note(new_rel):
+        if self._is_config(new_rel):
+            await self.setting_sync.push_rename(new_rel, old_rel)
+        elif self._is_note(new_rel):
             await self.note_sync.push_rename(new_rel, old_rel)
         else:
             await self.file_sync.push_delete(old_rel)
@@ -92,6 +101,7 @@ class SyncEngine:
         self.note_sync.register_handlers()
         self.file_sync.register_handlers()
         self.folder_sync.register_handlers()
+        self.setting_sync.register_handlers()
 
     async def run(self) -> None:
         """Connect, do initial sync, then watch for changes indefinitely."""
@@ -151,6 +161,10 @@ class SyncEngine:
             if self.config.sync.sync_files or self.config.sync.sync_config:
                 await self.file_sync.request_sync()
                 await self._wait_file_sync(timeout=300)
+
+            if self.config.sync.sync_config:
+                await self.setting_sync.request_full_sync()
+                await self._wait_setting_sync(timeout=120)
         finally:
             await self.ws_client.close()
             ws_task.cancel()
@@ -198,6 +212,9 @@ class SyncEngine:
 
             if self.config.sync.sync_files:
                 await self._push_all_files()
+
+            if self.config.sync.sync_config:
+                await self._push_all_settings()
         finally:
             await self.ws_client.close()
             ws_task.cancel()
@@ -216,6 +233,10 @@ class SyncEngine:
         if self.config.sync.sync_files or self.config.sync.sync_config:
             await self.file_sync.request_sync()
             await self._wait_file_sync(timeout=300)
+
+        if self.config.sync.sync_config:
+            await self.setting_sync.request_sync()
+            await self._wait_setting_sync(timeout=300)
 
     async def _wait_note_sync(self, timeout: float = 60) -> None:
         loop = asyncio.get_running_loop()
@@ -253,6 +274,15 @@ class SyncEngine:
                 break
             await asyncio.sleep(0.5)
 
+    async def _wait_setting_sync(self, timeout: float = 60) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not self.setting_sync.is_sync_complete:
+            if loop.time() > deadline:
+                log.warning("SettingSync timed out after %.0fs", timeout)
+                break
+            await asyncio.sleep(0.5)
+
     async def _push_all_files(self) -> None:
         """Upload every non-note, non-excluded file in the vault."""
         for fp in self.vault_path.rglob("*"):
@@ -266,4 +296,15 @@ class SyncEngine:
             if self._is_config(rel) and not self.config.sync.sync_config:
                 continue
             await self.file_sync.push_upload(rel)
+            await asyncio.sleep(0.05)
+
+    async def _push_all_settings(self) -> None:
+        """Upload every config file in dot-prefixed directories."""
+        for fp in self.vault_path.rglob("*"):
+            if fp.is_dir():
+                continue
+            rel = fp.relative_to(self.vault_path).as_posix()
+            if self.is_excluded(rel) or not self._is_config(rel):
+                continue
+            await self.setting_sync.push_modify(rel)
             await asyncio.sleep(0.05)

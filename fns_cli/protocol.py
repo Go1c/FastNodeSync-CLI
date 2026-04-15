@@ -30,6 +30,10 @@ ACTION_FOLDER_MODIFY = "FolderModify"
 ACTION_FOLDER_DELETE = "FolderDelete"
 ACTION_FOLDER_RENAME = "FolderRename"
 
+ACTION_SETTING_SYNC = "SettingSync"
+ACTION_SETTING_MODIFY = "SettingModify"
+ACTION_SETTING_DELETE = "SettingDelete"
+
 # ── Server → Client actions ──────────────────────────────────────────
 ACTION_NOTE_SYNC_MODIFY = "NoteSyncModify"
 ACTION_NOTE_SYNC_DELETE = "NoteSyncDelete"
@@ -46,6 +50,13 @@ ACTION_FILE_SYNC_CHUNK_DOWNLOAD = "FileSyncChunkDownload"
 ACTION_FILE_UPLOAD = "FileUpload"
 ACTION_FILE_UPLOAD_ACK = "FileUploadAck"
 ACTION_FILE_SYNC_END = "FileSyncEnd"
+
+ACTION_SETTING_SYNC_MODIFY = "SettingSyncModify"
+ACTION_SETTING_SYNC_DELETE = "SettingSyncDelete"
+ACTION_SETTING_SYNC_RENAME = "SettingSyncRename"
+ACTION_SETTING_SYNC_MTIME = "SettingSyncMtime"
+ACTION_SETTING_SYNC_NEED_UPLOAD = "SettingSyncNeedUpload"
+ACTION_SETTING_SYNC_END = "SettingSyncEnd"
 
 ACTION_FOLDER_SYNC_MODIFY = "FolderSyncModify"
 ACTION_FOLDER_SYNC_DELETE = "FolderSyncDelete"
