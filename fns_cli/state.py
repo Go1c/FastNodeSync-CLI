@@ -13,6 +13,7 @@ DEFAULT_STATE_FILE = ".fns_state.json"
 class SyncState:
     last_note_sync_time: int = 0
     last_file_sync_time: int = 0
+    last_setting_sync_time: int = 0
 
     _path: str = field(default="", repr=False)
 
@@ -32,6 +33,7 @@ class SyncState:
                 raw = json.loads(p.read_text(encoding="utf-8"))
                 state.last_note_sync_time = raw.get("last_note_sync_time", 0)
                 state.last_file_sync_time = raw.get("last_file_sync_time", 0)
+                state.last_setting_sync_time = raw.get("last_setting_sync_time", 0)
             except (json.JSONDecodeError, OSError):
                 pass
         return state

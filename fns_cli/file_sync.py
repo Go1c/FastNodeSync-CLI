@@ -500,9 +500,10 @@ class FileSync:
             rel = fp.relative_to(self.vault_path).as_posix()
             if self.engine.is_excluded(rel) or rel.endswith(".md"):
                 continue
-            if rel.startswith(".obsidian/") and not self.config.sync.sync_config:
+            first = rel.split("/")[0]
+            if first.startswith(".") and not self.config.sync.sync_config:
                 continue
-            if not rel.startswith(".obsidian/") and not self.config.sync.sync_files:
+            if not first.startswith(".") and not self.config.sync.sync_files:
                 continue
             try:
                 stat = fp.stat()
