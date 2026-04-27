@@ -53,7 +53,13 @@ class SyncEngine:
 
     def _is_config(self, rel_path: str) -> bool:
         first = rel_path.split("/")[0]
-        return first.startswith(".")
+        if not first.startswith("."):
+            return False
+        # Check if the directory is in the configured config_sync_dirs list
+        if first in self.config.sync.config_sync_dirs:
+            return True
+        # For other dot-prefixed dirs, check if sync_config is enabled
+        return self.config.sync.sync_config
 
     def _should_sync_file(self, rel_path: str) -> bool:
         if self._is_config(rel_path):
@@ -230,7 +236,7 @@ class SyncEngine:
             await self.note_sync.request_sync()
             await self._wait_note_sync(timeout=300)
 
-        if self.config.sync.sync_files or self.config.sync.sync_config:
+        if self.config.sync.sync_files:
             await self.file_sync.request_sync()
             await self._wait_file_sync(timeout=300)
 
@@ -284,16 +290,16 @@ class SyncEngine:
             await asyncio.sleep(0.5)
 
     async def _push_all_files(self) -> None:
-        """Upload every non-note, non-excluded file in the vault."""
+        """Upload every non-note, non-excluded, non-config file in the vault."""
         for fp in self.vault_path.rglob("*"):
             if fp.is_dir():
                 continue
             rel = fp.relative_to(self.vault_path).as_posix()
             if self.is_excluded(rel) or rel.endswith(".md"):
                 continue
-            if not self._is_config(rel) and not self.config.sync.sync_files:
+            if self._is_config(rel):
                 continue
-            if self._is_config(rel) and not self.config.sync.sync_config:
+            if not self.config.sync.sync_files:
                 continue
             await self.file_sync.push_upload(rel)
             await asyncio.sleep(0.05)
