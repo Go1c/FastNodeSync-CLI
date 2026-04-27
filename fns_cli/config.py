@@ -25,6 +25,9 @@ class SyncConfig:
         default_factory=lambda: [".git/**", ".trash/**", "*.tmp"]
     )
     file_chunk_size: int = 524288
+    config_sync_dirs: list[str] = field(
+        default_factory=lambda: [".obsidian", ".agents"]
+    )
 
 
 @dataclass
@@ -91,6 +94,9 @@ def load_config(path: str) -> AppConfig:
                 "exclude_patterns", [".git/**", ".trash/**", "*.tmp"]
             ),
             file_chunk_size=s.get("file_chunk_size", 524288),
+            config_sync_dirs=s.get(
+                "config_sync_dirs", [".obsidian", ".agents"]
+            ),
         )
 
     if "client" in raw:

@@ -1,13 +1,18 @@
 server:
-  api: "https://your-server.zeabur.app"
-  token: "your_api_token"
-  vault: "defaultVault"
+  api: "http://127.0.0.1:9000"
+  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjEsIm5pY2tuYW1lIjoiaHViaW4iLCJpcCI6IjE4MC4xNTIuNjUuOTkiLCJpc3MiOiJmYXN0LW5vdGUtc3luYy1zZXJ2aWNlIiwic3ViIjoidXNlci10b2tlbiIsImV4cCI6MTgwNzQxMzM0MCwibmJmIjoxNzc1ODc3MzQwLCJpYXQiOjE3NzU4NzczNDAsImp0aSI6IjEifQ.OgUOJXHrxxdNF9pv0tY0j5_qhBMsZsyaD_ByHqAgVtw"
+  vault: "my-vault"
 
 sync:
-  watch_path: "./vault"
+  watch_path: "/home/ubuntu/space/notes/my-vault"
   sync_notes: true
   sync_files: true
   sync_config: true
+  # 配置同步目录列表（以 . 开头的目录会被视为配置目录进行同步）
+  # Config directories to sync (dot-prefixed dirs treated as config)
+  config_sync_dirs:
+    - ".obsidian"
+    - ".agents"
   exclude_patterns:
     - ".git/**"
     - ".trash/**"
@@ -21,4 +26,4 @@ client:
 
 logging:
   level: "INFO"
-  file: ""
+  file: "/home/ubuntu/space/notes/fns-cli.log"

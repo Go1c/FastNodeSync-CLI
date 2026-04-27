@@ -53,7 +53,13 @@ class SyncEngine:
 
     def _is_config(self, rel_path: str) -> bool:
         first = rel_path.split("/")[0]
-        return first.startswith(".")
+        if not first.startswith("."):
+            return False
+        # Check if the directory is in the configured config_sync_dirs list
+        if first in self.config.sync.config_sync_dirs:
+            return True
+        # For other dot-prefixed dirs, check if sync_config is enabled
+        return self.config.sync.sync_config
 
     def _should_sync_file(self, rel_path: str) -> bool:
         if self._is_config(rel_path):

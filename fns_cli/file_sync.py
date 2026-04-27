@@ -501,7 +501,9 @@ class FileSync:
             if self.engine.is_excluded(rel) or rel.endswith(".md"):
                 continue
             first = rel.split("/")[0]
-            if first.startswith("."):
+            # Skip dot-prefixed directories that are handled by SettingSync
+            # (.obsidian, .agents, and other config dirs)
+            if first.startswith(".") and self.config.sync.sync_config:
                 continue
             if not self.config.sync.sync_files:
                 continue
