@@ -39,15 +39,24 @@ class FolderSync:
         ws.on(ACTION_FOLDER_SYNC_DELETE, self._on_sync_delete)
         ws.on(ACTION_FOLDER_SYNC_RENAME, self._on_sync_rename)
 
+    def _is_config_dir(self, rel_path: str) -> bool:
+        """Check if a path is in a config directory managed by SettingSync."""
+        first = rel_path.split("/")[0]
+        if not first.startswith("."):
+            return False
+        # Use the same logic as SyncEngine._is_config()
+        config = self.engine.config.sync
+        if first in config.config_sync_dirs:
+            return True
+        return config.sync_config
+
     async def _on_sync_modify(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
         if not rel_path:
             return
 
-        # Skip dot-prefixed directories — these are config folders managed by SettingSync
-        first = rel_path.split("/")[0]
-        if first.startswith("."):
+        if self._is_config_dir(rel_path):
             log.debug("Ignoring FolderSyncModify for config dir: %s", rel_path)
             return
 
@@ -64,9 +73,7 @@ class FolderSync:
         if not rel_path:
             return
 
-        # Skip dot-prefixed directories — these are config folders managed by SettingSync
-        first = rel_path.split("/")[0]
-        if first.startswith("."):
+        if self._is_config_dir(rel_path):
             log.debug("Ignoring FolderSyncDelete for config dir: %s", rel_path)
             return
 
@@ -85,10 +92,7 @@ class FolderSync:
         if not old_path or not new_path:
             return
 
-        # Skip dot-prefixed directories — these are config folders managed by SettingSync
-        first_old = old_path.split("/")[0]
-        first_new = new_path.split("/")[0]
-        if first_old.startswith(".") or first_new.startswith("."):
+        if self._is_config_dir(old_path) or self._is_config_dir(new_path):
             log.debug("Ignoring FolderSyncRename for config dir: %s → %s", old_path, new_path)
             return
 

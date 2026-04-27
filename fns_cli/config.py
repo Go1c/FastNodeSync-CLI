@@ -6,6 +6,9 @@ from pathlib import Path
 
 import yaml
 
+# Default directories treated as config / settings sync
+DEFAULT_CONFIG_SYNC_DIRS = [".obsidian", ".agents"]
+
 
 @dataclass
 class ServerConfig:
@@ -26,7 +29,7 @@ class SyncConfig:
     )
     file_chunk_size: int = 524288
     config_sync_dirs: list[str] = field(
-        default_factory=lambda: [".obsidian", ".agents"]
+        default_factory=lambda: list(DEFAULT_CONFIG_SYNC_DIRS)
     )
 
 
@@ -95,7 +98,7 @@ def load_config(path: str) -> AppConfig:
             ),
             file_chunk_size=s.get("file_chunk_size", 524288),
             config_sync_dirs=s.get(
-                "config_sync_dirs", [".obsidian", ".agents"]
+                "config_sync_dirs", list(DEFAULT_CONFIG_SYNC_DIRS)
             ),
         )
 
