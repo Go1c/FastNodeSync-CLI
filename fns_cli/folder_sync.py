@@ -45,6 +45,12 @@ class FolderSync:
         if not rel_path:
             return
 
+        # Skip dot-prefixed directories — these are config folders managed by SettingSync
+        first = rel_path.split("/")[0]
+        if first.startswith("."):
+            log.debug("Ignoring FolderSyncModify for config dir: %s", rel_path)
+            return
+
         full = self.vault_path / rel_path
         try:
             full.mkdir(parents=True, exist_ok=True)
@@ -56,6 +62,12 @@ class FolderSync:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
         if not rel_path:
+            return
+
+        # Skip dot-prefixed directories — these are config folders managed by SettingSync
+        first = rel_path.split("/")[0]
+        if first.startswith("."):
+            log.debug("Ignoring FolderSyncDelete for config dir: %s", rel_path)
             return
 
         full = self.vault_path / rel_path
@@ -71,6 +83,13 @@ class FolderSync:
         old_path: str = data.get("oldPath", "")
         new_path: str = data.get("path", "")
         if not old_path or not new_path:
+            return
+
+        # Skip dot-prefixed directories — these are config folders managed by SettingSync
+        first_old = old_path.split("/")[0]
+        first_new = new_path.split("/")[0]
+        if first_old.startswith(".") or first_new.startswith("."):
+            log.debug("Ignoring FolderSyncRename for config dir: %s → %s", old_path, new_path)
             return
 
         old_full = self.vault_path / old_path
