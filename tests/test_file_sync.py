@@ -323,6 +323,34 @@ class TestFileSyncDeleteCounter(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(*self.fs._upload_tasks), timeout=1)
 
 
+class TestFileSyncLoopBinding(unittest.TestCase):
+
+    def test_upload_workers_use_running_loop_when_file_sync_created_before_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fs = FileSync(_make_engine(Path(tmp)))
+
+            async def probe():
+                await fs._ensure_upload_workers()
+                await asyncio.sleep(0)
+
+                workers = list(fs._upload_workers)
+                failures = []
+                for task in workers:
+                    if task.done():
+                        failures.append(task.exception())
+
+                try:
+                    self.assertEqual(len(workers), 1)
+                    self.assertFalse(failures, f"upload worker failed: {failures!r}")
+                finally:
+                    for task in workers:
+                        task.cancel()
+                    if workers:
+                        await asyncio.gather(*workers, return_exceptions=True)
+
+            asyncio.run(probe())
+
+
 class TestFileSyncWatcherIgnore(unittest.TestCase):
     """Watcher on_moved must honour is_ignored to avoid echo-backs."""
 

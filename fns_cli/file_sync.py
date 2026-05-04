@@ -82,7 +82,7 @@ class FileSync:
             upload_concurrency = 2
         self._upload_worker_count = upload_concurrency
         self._upload_workers: set[asyncio.Task] = set()
-        self._upload_queue: asyncio.Queue = asyncio.Queue()
+        self._upload_queue: asyncio.Queue | None = None
         # See NoteSync._echo_hashes — same semantics here. Updated on both
         # inbound (server write / chunk finalize / rename / delete) and
         # outbound (push_upload / push_delete) so the cache tracks the most
@@ -200,12 +200,20 @@ class FileSync:
 
         await self._ensure_upload_workers()
         completion = asyncio.get_running_loop().create_future()
-        await self._upload_queue.put((session_id, chunk_size, rel_path, full, completion))
+        await self._ensure_upload_queue().put(
+            (session_id, chunk_size, rel_path, full, completion)
+        )
         task = asyncio.create_task(self._await_upload_completion(completion))
         self._upload_tasks.add(task)
         task.add_done_callback(self._upload_tasks.discard)
 
+    def _ensure_upload_queue(self) -> asyncio.Queue:
+        if self._upload_queue is None:
+            self._upload_queue = asyncio.Queue()
+        return self._upload_queue
+
     async def _ensure_upload_workers(self) -> None:
+        self._ensure_upload_queue()
         while len(self._upload_workers) < self._upload_worker_count:
             task = asyncio.create_task(self._upload_queue_worker())
             self._upload_workers.add(task)
@@ -216,7 +224,8 @@ class FileSync:
 
     async def _upload_queue_worker(self) -> None:
         while True:
-            session_id, chunk_size, rel_path, full, completion = await self._upload_queue.get()
+            queue = self._ensure_upload_queue()
+            session_id, chunk_size, rel_path, full, completion = await queue.get()
             try:
                 await self._upload_session_worker(session_id, chunk_size, rel_path, full)
             except Exception as exc:
@@ -226,7 +235,7 @@ class FileSync:
                 if not completion.done():
                     completion.set_result(None)
             finally:
-                self._upload_queue.task_done()
+                queue.task_done()
 
     async def _upload_session_worker(
         self,

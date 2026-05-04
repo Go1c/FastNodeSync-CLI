@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+if "yaml" not in sys.modules:
+    yaml_stub = types.ModuleType("yaml")
+    yaml_stub.safe_load = lambda _stream: {}
+    sys.modules["yaml"] = yaml_stub
 
 from fns_cli.client import WSClient
-from fns_cli.protocol import WSMessage
+from fns_cli.protocol import ACTION_CLIENT_INFO, WSMessage
 
 
 def _make_config() -> MagicMock:
@@ -73,6 +80,26 @@ class TestWSClientReconnect(unittest.IsolatedAsyncioTestCase):
 
         release.set()
         await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+
+    async def test_client_info_echo_is_ignored(self):
+        client = WSClient(_make_config())
+        raw = WSMessage(ACTION_CLIENT_INFO, {"name": "server"}).encode()
+
+        with patch("fns_cli.client.log.warning") as warning:
+            await client._handle_text(raw)
+
+        warning.assert_not_called()
+
+
+class TestWSClientLoopBinding(unittest.TestCase):
+
+    def test_wait_ready_uses_running_loop_when_client_created_before_loop(self):
+        client = WSClient(_make_config())
+
+        async def probe():
+            self.assertFalse(await client.wait_ready(timeout=0.01))
+
+        asyncio.run(probe())
 
 
 if __name__ == "__main__":

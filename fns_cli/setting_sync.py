@@ -39,11 +39,15 @@ def _extract_inner(msg_data: dict) -> dict:
     return msg_data if isinstance(msg_data, dict) else {}
 
 
-def _is_config_path(rel: str, config_sync_dirs: list[str] | None = None) -> bool:
+def _is_config_path(
+    rel: str,
+    config_sync_dirs: list[str] | None = None,
+    sync_config: bool = True,
+) -> bool:
     """Check whether a relative path belongs to config/settings scope.
 
-    This matches the Obsidian plugin behaviour: anything inside a dot-prefixed
-    directory (e.g. .obsidian, .agents) is treated as a setting file.
+    Explicit config sync directories (e.g. .obsidian, .agents) are always
+    treated as settings. Other dot-prefixed directories follow sync_config.
     Standard exclusions (.git, .trash) are handled by is_excluded() upstream.
 
     config_sync_dirs: configured dot-prefixed directories to treat as config
@@ -55,8 +59,8 @@ def _is_config_path(rel: str, config_sync_dirs: list[str] | None = None) -> bool
     # Check configured config sync directories
     if config_sync_dirs and first in config_sync_dirs:
         return True
-    # By default, treat all dot-prefixed dirs as config (backward compatible)
-    return True
+    # Other dot-prefixed dirs only count as config when config sync is enabled.
+    return sync_config
 
 
 class SettingSync:
@@ -330,7 +334,11 @@ class SettingSync:
             rel = fp.relative_to(self.vault_path).as_posix()
             if self.engine.is_excluded(rel):
                 continue
-            if not _is_config_path(rel):
+            if not _is_config_path(
+                rel,
+                self.config.sync.config_sync_dirs,
+                self.config.sync.sync_config,
+            ):
                 continue
             try:
                 hash_ = file_content_hash_binary(fp)

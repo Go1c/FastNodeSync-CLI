@@ -23,6 +23,7 @@ def _run_async(coro):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     main_task = loop.create_task(coro)
 
@@ -41,7 +42,16 @@ def _run_async(coro):
     except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
+        pending = [
+            task for task in asyncio.all_tasks(loop)
+            if task is not main_task and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.run_until_complete(loop.shutdown_asyncgens())
+        asyncio.set_event_loop(None)
         loop.close()
 
 

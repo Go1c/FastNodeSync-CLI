@@ -36,8 +36,8 @@ class WSClient:
         self._on_reconnect: Callable[[], Coroutine] | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._msg_queue: list[str | bytes] = []
-        self._ready_event = asyncio.Event()
-        self._send_lock = asyncio.Lock()
+        self._ready_event: asyncio.Event | None = None
+        self._send_lock: asyncio.Lock | None = None
 
     def on_reconnect(self, handler: Callable[[], Coroutine]) -> None:
         self._on_reconnect = handler
@@ -47,6 +47,16 @@ class WSClient:
 
     def on_binary(self, handler: Callable[..., Coroutine]) -> None:
         self._binary_handler = handler
+
+    def _ensure_ready_event(self) -> asyncio.Event:
+        if self._ready_event is None:
+            self._ready_event = asyncio.Event()
+        return self._ready_event
+
+    def _ensure_send_lock(self) -> asyncio.Lock:
+        if self._send_lock is None:
+            self._send_lock = asyncio.Lock()
+        return self._send_lock
 
     async def send(self, msg: WSMessage) -> None:
         raw = msg.encode()
@@ -62,7 +72,7 @@ class WSClient:
         await self._raw_send(data)
 
     async def _raw_send(self, data: str | bytes) -> None:
-        async with self._send_lock:
+        async with self._ensure_send_lock():
             if self.ws is None:
                 self._msg_queue.append(data)
                 return
@@ -115,7 +125,7 @@ class WSClient:
 
     async def _connect(self) -> None:
         self.is_authenticated = False
-        self._ready_event.clear()
+        self._ensure_ready_event().clear()
         self._connect_count += 1
 
         url = (
@@ -157,6 +167,9 @@ class WSClient:
             await self._on_auth_response(msg)
             return
 
+        if msg.action == ACTION_CLIENT_INFO:
+            return
+
         handler = self._handlers.get(msg.action)
         if handler:
             try:
@@ -189,7 +202,7 @@ class WSClient:
             })
             await self._raw_send(client_info.encode())
             await self._flush_queue()
-            self._ready_event.set()
+            self._ensure_ready_event().set()
             if self._connect_count > 1 and self._on_reconnect:
                 if self._reconnect_task and not self._reconnect_task.done():
                     self._reconnect_task.cancel()
@@ -212,7 +225,7 @@ class WSClient:
 
     async def wait_ready(self, timeout: float = 30) -> bool:
         try:
-            await asyncio.wait_for(self._ready_event.wait(), timeout)
+            await asyncio.wait_for(self._ensure_ready_event().wait(), timeout)
             return True
         except asyncio.TimeoutError:
             return False
