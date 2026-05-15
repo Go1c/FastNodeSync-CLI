@@ -1,0 +1,11 @@
+.git
+.github
+__pycache__
+*.pyc
+tests/
+doc/
+vault/
+config/
+.fns_state.json
+*.md
+!fns_cli/*.md

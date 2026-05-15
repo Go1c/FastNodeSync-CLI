@@ -18,6 +18,7 @@ client:
   reconnect_max_retries: 15
   reconnect_base_delay: 3
   heartbeat_interval: 30
+  client_type: "fns-cli"
 
 logging:
   level: "INFO"
