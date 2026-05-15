@@ -21,6 +21,7 @@ def _make_config() -> MagicMock:
     config = MagicMock()
     config.client.reconnect_base_delay = 1
     config.client.reconnect_max_retries = 3
+    config.client.client_type = "fns-cli"
     config.server.token = "token"
     config.ws_api = "wss://example.com"
     return config

@@ -38,6 +38,7 @@ class ClientConfig:
     reconnect_max_retries: int = 15
     reconnect_base_delay: int = 3
     heartbeat_interval: int = 30
+    client_type: str = "fns-cli"
 
 
 @dataclass
@@ -108,6 +109,7 @@ def load_config(path: str) -> AppConfig:
             reconnect_max_retries=c.get("reconnect_max_retries", 15),
             reconnect_base_delay=c.get("reconnect_base_delay", 3),
             heartbeat_interval=c.get("heartbeat_interval", 30),
+            client_type=c.get("client_type", "fns-cli"),
         )
 
     if "logging" in raw:
