@@ -1,0 +1,13 @@
+services:
+  fns-cli:
+    build: .
+    container_name: fns-cli
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config      # Mount config directory
+      - ./vault:/app/vault        # Mount vault directory for sync
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Optional: override config values via env vars
+      # - FNS_API=https://your-server-address
+      # - FNS_TOKEN=your_jwt_token

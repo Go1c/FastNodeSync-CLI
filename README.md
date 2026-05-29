@@ -67,7 +67,7 @@ Edit `config.yaml`:
 ```yaml
 server:
   api: "https://your-server-address"   # Fast Note Sync Service base URL
-  token: "your_api_token"              # API token from the admin panel
+  token: "your_api_token"              # JWT token from the Token Management panel
   vault: "notes"                       # Vault name; must match the Obsidian plugin
 
 sync:
@@ -85,6 +85,7 @@ client:
   reconnect_max_retries: 15
   reconnect_base_delay: 3
   heartbeat_interval: 30
+  client_type: "fns-cli"              # Client identifier for 3D-RBAC auth
 
 logging:
   level: "INFO"
@@ -93,16 +94,32 @@ logging:
 
 **How to obtain a token**
 
+> **Note:** Since service version with 3D-RBAC, tokens are now JWT-based and managed via the web UI.
+
 1. Open the Fast Note Sync Service web UI (e.g. `https://your-server-address`)
 2. Sign in
-3. Click **"Copy API Config"**
-4. Copy `api`, `apiToken`, and `vault` from the JSON into `config.yaml`
+3. Navigate to **Settings → Token Management**
+4. Click **"Create Token"** with these settings:
+   - **Client Type**: `fns-cli` (or a descriptive name like `my-server-cli`)
+   - **Scope**: `p:ws c:fns-cli* f:note_rw,file_rw,config_rw` (full read/write access via WebSocket)
+   - **Expired Days**: set as needed (e.g. `365`)
+5. Copy the generated JWT token into `config.yaml`'s `token` field
+
+**Scope examples:**
+
+| Use case | Scope |
+|----------|-------|
+| Full sync (read + write) | `p:ws c:fns-cli* f:note_rw,file_rw,config_rw` |
+| Read-only (pull only) | `p:ws c:fns-cli* f:note_r,file_r,config_r` |
+| Notes only | `p:ws c:fns-cli* f:note_rw` |
+
+> **Fallback:** If your server version still supports legacy tokens, the old "Copy API Config" method also works — the CLI sends the token as-is.
 
 Optional environment variables (override when not set in the file):
 
 ```bash
 export FNS_API="https://your-server-address"
-export FNS_TOKEN="your_api_token"
+export FNS_TOKEN="your_jwt_token"
 ```
 
 ### 4. Run

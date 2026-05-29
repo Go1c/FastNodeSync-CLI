@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any, Callable, Coroutine
 
 import websockets
@@ -18,6 +19,7 @@ from .protocol import (
     decode_message,
     parse_binary_chunk,
 )
+from . import __version__
 
 log = logging.getLogger("fns_cli.client")
 
@@ -128,9 +130,13 @@ class WSClient:
         self._ensure_ready_event().clear()
         self._connect_count += 1
 
+        client_type = self.config.client.client_type
         url = (
             f"{self.config.ws_api}/api/user/sync"
             f"?lang=zh-cn&count={self._connect_count}"
+            f"&client={client_type}"
+            f"&clientName=FastNodeSync-CLI"
+            f"&clientVersion={__version__}"
         )
         log.info("Connecting to %s", url)
 
@@ -197,8 +203,15 @@ class WSClient:
 
             client_info = WSMessage(ACTION_CLIENT_INFO, {
                 "name": "FastNodeSync-CLI",
-                "version": "0.1.0",
-                "type": "cli",
+                "version": __version__,
+                "type": self.config.client.client_type,
+                "isDesktop": True,
+                "isMobile": False,
+                "isPhone": False,
+                "isTablet": False,
+                "isMacOS": sys.platform == "darwin",
+                "isWin": sys.platform == "win32",
+                "isLinux": sys.platform.startswith("linux"),
             })
             await self._raw_send(client_info.encode())
             await self._flush_queue()
