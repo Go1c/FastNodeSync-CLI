@@ -70,6 +70,8 @@ class NoteSync:
         #     Without outbound update the later local delete is dropped
         #     because the cache still holds _DELETED.
         self._echo_hashes: dict[str, str] = {}
+        # Set by request_full_sync(); used to update state after completion.
+        self._full_sync_local_paths: set[str] | None = None
 
     @property
     def is_sync_complete(self) -> bool:
@@ -99,17 +101,36 @@ class NoteSync:
         await self.engine.ws_client.send(msg)
 
     async def request_full_sync(self) -> None:
-        """Full sync: send all local notes for comparison."""
+        """Full sync: send all local notes + explicitly report deleted notes.
+
+        Deleted notes are detected by comparing the previously saved
+        synced_note_paths against the current on-disk state.  Any path that
+        was tracked before but is now absent is sent in delNotes so the server
+        deletes it instead of pushing it back to the client.
+        """
         self._reset_counters()
         notes = self._collect_local_notes()
+        self._full_sync_local_paths = {n["path"] for n in notes}
+
+        previously_synced = set(self.engine.state.synced_note_paths)
+        del_paths = previously_synced - self._full_sync_local_paths
+        del_notes = [
+            {"path": p, "pathHash": path_hash(p)}
+            for p in sorted(del_paths)
+        ]
+
         ctx = str(uuid.uuid4())
         msg = WSMessage(ACTION_NOTE_SYNC, {
             "context": ctx,
             "vault": self.config.server.vault,
             "lastTime": 0,
             "notes": notes,
+            "delNotes": del_notes,
         })
-        log.info("Requesting full NoteSync with %d local notes", len(notes))
+        log.info(
+            "Requesting full NoteSync with %d local notes, %d deletions",
+            len(notes), len(del_notes),
+        )
         await self.engine.ws_client.send(msg)
 
     async def push_modify(self, rel_path: str, *, force: bool = False) -> None:
@@ -308,6 +329,11 @@ class NoteSync:
         if self._pending_last_time:
             log.info("Committing note lastTime=%d", self._pending_last_time)
             self.engine.state.last_note_sync_time = self._pending_last_time
+            if self._full_sync_local_paths is not None:
+                # After a successful full sync, record the current local paths
+                # so future runs can detect deletions via the diff.
+                self.engine.state.synced_note_paths = sorted(self._full_sync_local_paths)
+                self._full_sync_local_paths = None
             self.engine.state.save()
             self._pending_last_time = 0
 
