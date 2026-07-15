@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING
 
 from .protocol import (
     ACTION_FOLDER_SYNC_DELETE,
+    ACTION_FOLDER_SYNC_END,
     ACTION_FOLDER_SYNC_MODIFY,
+    ACTION_FOLDER_SYNC_PAGE,
+    ACTION_FOLDER_SYNC_PAGE_ACK,
     ACTION_FOLDER_SYNC_RENAME,
     WSMessage,
 )
@@ -32,12 +35,36 @@ class FolderSync:
     def __init__(self, engine: SyncEngine) -> None:
         self.engine = engine
         self.vault_path = engine.vault_path
+        self._sync_context: str = ""
+        self._sync_vault: str = ""
+        self._expected_modify: int = 0
+        self._expected_delete: int = 0
+        self._received_modify: int = 0
+        self._received_delete: int = 0
+        self._got_end: bool = False
+        self._sync_complete: bool = False
+
+    @property
+    def is_sync_complete(self) -> bool:
+        return self._sync_complete
+
+    def _reset_counters(self) -> None:
+        self._sync_complete = False
+        self._got_end = False
+        self._expected_modify = 0
+        self._expected_delete = 0
+        self._received_modify = 0
+        self._received_delete = 0
+        self._sync_context = ""
+        self._sync_vault = ""
 
     def register_handlers(self) -> None:
         ws = self.engine.ws_client
         ws.on(ACTION_FOLDER_SYNC_MODIFY, self._on_sync_modify)
         ws.on(ACTION_FOLDER_SYNC_DELETE, self._on_sync_delete)
         ws.on(ACTION_FOLDER_SYNC_RENAME, self._on_sync_rename)
+        ws.on(ACTION_FOLDER_SYNC_END, self._on_sync_end)
+        ws.on(ACTION_FOLDER_SYNC_PAGE, self._on_sync_page)
 
     def _is_config_dir(self, rel_path: str) -> bool:
         """Check if a path is in a config directory managed by SettingSync."""
@@ -67,6 +94,9 @@ class FolderSync:
         except Exception:
             log.exception("Failed to create folder %s", rel_path)
 
+        self._received_modify += 1
+        self._check_all_received()
+
     async def _on_sync_delete(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
@@ -84,6 +114,9 @@ class FolderSync:
                 log.info("← FolderSyncDelete: %s", rel_path)
         except Exception:
             log.exception("Failed to delete folder %s", rel_path)
+
+        self._received_delete += 1
+        self._check_all_received()
 
     async def _on_sync_rename(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -107,3 +140,59 @@ class FolderSync:
             log.info("← FolderSyncRename: %s → %s", old_path, new_path)
         except Exception:
             log.exception("Failed to rename folder %s → %s", old_path, new_path)
+
+    async def _send_page_ack(self, context: str, page_index: int, vault: str) -> None:
+        msg = WSMessage(
+            ACTION_FOLDER_SYNC_PAGE_ACK,
+            {
+                "context": context,
+                "pageIndex": page_index,
+                "vault": vault,
+            },
+        )
+        await self.engine.ws_client.send(msg)
+
+    async def _on_sync_page(self, msg: WSMessage) -> None:
+        data = _extract_inner(msg.data)
+        page_index = data.get("pageIndex", msg.data.get("pageIndex", 0)) if isinstance(msg.data, dict) else data.get("pageIndex", 0)
+        is_last = data.get("isLast", msg.data.get("isLast", False)) if isinstance(msg.data, dict) else data.get("isLast", False)
+        log.debug("← FolderSyncPage (pageIndex=%d, isLast=%s)", page_index, is_last)
+
+        if not is_last and page_index >= 0:
+            await self._send_page_ack(self._sync_context, page_index, self._sync_vault)
+
+        self._check_all_received()
+
+    async def _on_sync_end(self, msg: WSMessage) -> None:
+        data = _extract_inner(msg.data)
+        if isinstance(msg.data, dict):
+            self._sync_context = msg.data.get("context", "") or (data.get("context", "") if isinstance(data, dict) else "")
+            self._sync_vault = msg.data.get("vault", "") or (data.get("vault", "") if isinstance(data, dict) else "")
+        elif isinstance(data, dict):
+            self._sync_context = data.get("context", "") or ""
+            self._sync_vault = data.get("vault", "") or ""
+
+        self._expected_modify = data.get("needModifyCount", 0)
+        self._expected_delete = data.get("needDeleteCount", 0)
+        self._got_end = True
+        log.info(
+            "← FolderSyncEnd (needModify=%d, needDelete=%d)",
+            self._expected_modify,
+            self._expected_delete,
+        )
+
+        total_expected = self._expected_modify + self._expected_delete
+        if total_expected == 0:
+            self._sync_complete = True
+        else:
+            await self._send_page_ack(self._sync_context, -1, self._sync_vault)
+            self._check_all_received()
+
+    def _check_all_received(self) -> None:
+        if not self._got_end:
+            return
+        total_expected = self._expected_modify + self._expected_delete
+        total_received = self._received_modify + self._received_delete
+        if total_received >= total_expected:
+            log.info("FolderSync complete: %d modified, %d deleted", self._received_modify, self._received_delete)
+            self._sync_complete = True
