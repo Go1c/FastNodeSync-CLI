@@ -285,11 +285,11 @@ class NoteSync:
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         if isinstance(msg.data, dict):
-            self._sync_context = msg.data.get("context", "") or (data.get("context", "") if isinstance(data, dict) else "")
-            self._sync_vault = msg.data.get("vault", "") or (data.get("vault", "") if isinstance(data, dict) else "")
+            self._sync_context = (msg.data.get("context") or (data.get("context") if isinstance(data, dict) else "") or "")
+            self._sync_vault = (msg.data.get("vault") or (data.get("vault") if isinstance(data, dict) else "") or "")
         elif isinstance(data, dict):
-            self._sync_context = data.get("context", "")
-            self._sync_vault = data.get("vault", "")
+            self._sync_context = data.get("context") or ""
+            self._sync_vault = data.get("vault") or ""
 
         last_time = data.get("lastTime", 0)
         self._expected_modify = data.get("needModifyCount", 0)
@@ -327,7 +327,9 @@ class NoteSync:
     async def _on_sync_page(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         page_index = data.get("pageIndex", msg.data.get("pageIndex", 0)) if isinstance(msg.data, dict) else data.get("pageIndex", 0)
-        is_last = data.get("isLast", False)
+        is_last = data.get("isLast", msg.data.get("isLast", False)) if isinstance(msg.data, dict) else data.get("isLast", False)
+        page_index = int(page_index or 0)
+        is_last = bool(is_last)
         log.debug("← NoteSyncPage (pageIndex=%d, isLast=%s)", page_index, is_last)
 
         if not is_last and page_index >= 0:
