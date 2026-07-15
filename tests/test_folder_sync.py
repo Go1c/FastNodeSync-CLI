@@ -160,6 +160,31 @@ class TestFolderSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fs._sync_context, "")
         self.assertEqual(self.fs._sync_vault, "")
 
+    async def test_config_dir_events_increment_counters_and_complete_sync(self):
+        self.fs.register_handlers()
+        self.fs.engine.config.sync.config_sync_dirs = [".obsidian"]
+
+        end_msg = WSMessage(
+            "FolderSyncEnd",
+            {
+                "context": "ctx-cfg",
+                "vault": "vault-D",
+                "data": {"needModifyCount": 1, "needDeleteCount": 1},
+            },
+        )
+        await self.fs._on_sync_end(end_msg)
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_sync_modify(WSMessage("FolderSyncModify", {"path": ".obsidian/plugins/foo"}))
+        self.assertEqual(self.fs._received_modify, 1)
+        self.assertFalse(self.fs.is_sync_complete)
+        self.assertFalse((self.vault / ".obsidian/plugins/foo").exists())
+
+        await self.fs._on_sync_delete(WSMessage("FolderSyncDelete", {"path": ".obsidian/themes/bar"}))
+        self.assertEqual(self.fs._received_delete, 1)
+        self.assertTrue(self.fs.is_sync_complete)
+
 
 if __name__ == "__main__":
     unittest.main()
+

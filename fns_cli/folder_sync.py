@@ -81,10 +81,14 @@ class FolderSync:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
         if not rel_path:
+            self._received_modify += 1
+            self._check_all_received()
             return
 
         if self._is_config_dir(rel_path):
             log.debug("Ignoring FolderSyncModify for config dir: %s", rel_path)
+            self._received_modify += 1
+            self._check_all_received()
             return
 
         full = self.vault_path / rel_path
@@ -101,10 +105,14 @@ class FolderSync:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
         if not rel_path:
+            self._received_delete += 1
+            self._check_all_received()
             return
 
         if self._is_config_dir(rel_path):
             log.debug("Ignoring FolderSyncDelete for config dir: %s", rel_path)
+            self._received_delete += 1
+            self._check_all_received()
             return
 
         full = self.vault_path / rel_path
