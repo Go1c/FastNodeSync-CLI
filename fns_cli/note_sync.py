@@ -292,8 +292,8 @@ class NoteSync:
             self._sync_vault = data.get("vault") or ""
 
         last_time = data.get("lastTime", 0)
-        self._expected_modify = data.get("needModifyCount", 0)
-        self._expected_delete = data.get("needDeleteCount", 0)
+        self._expected_modify = int(data.get("needModifyCount") or 0)
+        self._expected_delete = int(data.get("needDeleteCount") or 0)
         self._pending_last_time = last_time
 
         self._got_end = True
