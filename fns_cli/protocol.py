@@ -63,6 +63,19 @@ ACTION_FOLDER_SYNC_DELETE = "FolderSyncDelete"
 ACTION_FOLDER_SYNC_RENAME = "FolderSyncRename"
 ACTION_FOLDER_SYNC_END = "FolderSyncEnd"
 
+# ── Client → Server actions (分页确认) ────────────────────────────────
+ACTION_NOTE_SYNC_PAGE_ACK = "NoteSyncPageAck"
+ACTION_FILE_SYNC_PAGE_ACK = "FileSyncPageAck"
+ACTION_SETTING_SYNC_PAGE_ACK = "SettingSyncPageAck"
+ACTION_FOLDER_SYNC_PAGE_ACK = "FolderSyncPageAck"
+
+# ── Server → Client actions (分页下发) ────────────────────────────────
+ACTION_NOTE_SYNC_PAGE = "NoteSyncPage"
+ACTION_FILE_SYNC_PAGE = "FileSyncPage"
+ACTION_SETTING_SYNC_PAGE = "SettingSyncPage"
+ACTION_FOLDER_SYNC_PAGE = "FolderSyncPage"
+
+
 # ── Status codes ──────────────────────────────────────────────────────
 CODE_SUCCESS = 1
 CODE_NO_UPDATE = 6
