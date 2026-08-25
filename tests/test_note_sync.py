@@ -24,7 +24,10 @@ def _make_engine(vault_path: Path) -> MagicMock:
     state.last_note_sync_time = 0
 
     ws = MagicMock()
-    ws.send = AsyncMock()
+    ws.sent = []
+    async def _send(msg):
+        ws.sent.append(msg)
+    ws.send = AsyncMock(side_effect=_send)
 
     engine = MagicMock()
     engine.config = config
@@ -81,6 +84,60 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((self.vault / "folder" / "old.md").exists())
         self.assertEqual((self.vault / "folder" / "new.md").read_text(encoding="utf-8"), "hello")
+
+    async def test_note_sync_pagination_flow(self):
+        self.ns.register_handlers()
+
+        # 1. Simulate NoteSyncEnd with expected items
+        end_msg = WSMessage(
+            "NoteSyncEnd",
+            {
+                "context": "ctx-123",
+                "vault": "vault-A",
+                "data": {
+                    "lastTime": 1000,
+                    "needModifyCount": 1,
+                    "needDeleteCount": 0,
+                },
+            },
+        )
+        await self.ns._on_sync_end(end_msg)
+
+        # Verify initial PageAck(pageIndex=-1) was sent
+        self.assertEqual(len(self.engine.ws_client.sent), 1)
+        sent_ack = self.engine.ws_client.sent[0]
+        self.assertEqual(sent_ack.action, "NoteSyncPageAck")
+        self.assertEqual(sent_ack.data, {"context": "ctx-123", "pageIndex": -1, "vault": "vault-A"})
+        self.assertFalse(self.ns.is_sync_complete)
+
+        # 2. Simulate NoteSyncPage(pageIndex=0, isLast=False)
+        page_msg = WSMessage(
+            "NoteSyncPage",
+            {
+                "context": "ctx-123",
+                "pageIndex": 0,
+                "data": {"pageIndex": 0, "isLast": False, "items": ["note1.md"]},
+            },
+        )
+        await self.ns._on_sync_page(page_msg)
+
+        # Verify PageAck(pageIndex=0) sent
+        self.assertEqual(len(self.engine.ws_client.sent), 2)
+        self.assertEqual(self.engine.ws_client.sent[1].data["pageIndex"], 0)
+        self.assertFalse(self.ns.is_sync_complete)
+
+        # 3. Simulate Modify arrival and NoteSyncPage(isLast=True)
+        self.ns._received_modify = 1
+        last_page_msg = WSMessage(
+            "NoteSyncPage",
+            {
+                "context": "ctx-123",
+                "pageIndex": 1,
+                "data": {"pageIndex": 1, "isLast": True, "items": []},
+            },
+        )
+        await self.ns._on_sync_page(last_page_msg)
+        self.assertTrue(self.ns.is_sync_complete)
 
 
 if __name__ == "__main__":

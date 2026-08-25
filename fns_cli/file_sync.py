@@ -19,6 +19,8 @@ from .protocol import (
     ACTION_FILE_SYNC_DELETE,
     ACTION_FILE_SYNC_END,
     ACTION_FILE_SYNC_MTIME,
+    ACTION_FILE_SYNC_PAGE,
+    ACTION_FILE_SYNC_PAGE_ACK,
     ACTION_FILE_SYNC_RENAME,
     ACTION_FILE_SYNC_UPDATE,
     ACTION_FILE_UPLOAD,
@@ -75,6 +77,8 @@ class FileSync:
         self._received_delete = 0
         self._got_end = False
         self._pending_last_time = 0
+        self._sync_context: str = ""
+        self._sync_vault: str = ""
         self._last_sync_activity_monotonic = time.monotonic()
         self._upload_tasks: set[asyncio.Task] = set()
         upload_concurrency = getattr(self.config.sync, "upload_concurrency", 2)
@@ -102,6 +106,7 @@ class FileSync:
         ws.on(ACTION_FILE_SYNC_CHUNK_DOWNLOAD, self._on_chunk_download_start)
         ws.on(ACTION_FILE_UPLOAD, self._on_upload_session)
         ws.on(ACTION_FILE_UPLOAD_ACK, self._on_upload_ack)
+        ws.on(ACTION_FILE_SYNC_PAGE, self._on_sync_page)
         ws.on(ACTION_FILE_SYNC_END, self._on_sync_end)
         ws.on_binary(self._on_binary_chunk)
 
@@ -115,6 +120,8 @@ class FileSync:
         self._received_modify = 0
         self._received_delete = 0
         self._pending_last_time = 0
+        self._sync_context = ""
+        self._sync_vault = ""
         self._last_sync_activity_monotonic = time.monotonic()
 
     def _mark_sync_activity(self) -> None:
@@ -457,13 +464,47 @@ class FileSync:
             self._pending_download_paths.discard(rel_path)
             self._check_complete()
 
+    async def _send_page_ack(self, context: str, page_index: int, vault: str) -> None:
+        msg = WSMessage(
+            ACTION_FILE_SYNC_PAGE_ACK,
+            {
+                "context": context,
+                "pageIndex": page_index,
+                "vault": vault,
+            },
+        )
+        await self.engine.ws_client.send(msg)
+
+    async def _on_sync_page(self, msg: WSMessage) -> None:
+        data = _extract_inner(msg.data)
+        if isinstance(msg.data, dict):
+            page_index = data.get("pageIndex") if data.get("pageIndex") is not None else msg.data.get("pageIndex", 0)
+            is_last = data.get("isLast") if data.get("isLast") is not None else msg.data.get("isLast", False)
+        else:
+            page_index = data.get("pageIndex", 0)
+            is_last = data.get("isLast", False)
+        page_index = int(page_index)
+        is_last = bool(is_last)
+        log.debug("← FileSyncPage (pageIndex=%d, isLast=%s)", page_index, is_last)
+
+        if not is_last and page_index >= 0:
+            await self._send_page_ack(self._sync_context, page_index, self._sync_vault)
+
+        self._check_complete()
+
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        if isinstance(msg.data, dict):
+            self._sync_context = msg.data.get("context", "") or (data.get("context", "") if isinstance(data, dict) else "") or ""
+            self._sync_vault = msg.data.get("vault", "") or (data.get("vault", "") if isinstance(data, dict) else "") or ""
+        elif isinstance(data, dict):
+            self._sync_context = data.get("context", "") or ""
+            self._sync_vault = data.get("vault", "") or ""
         self._mark_sync_activity()
         last_time = data.get("lastTime", 0)
         self._pending_last_time = last_time
-        self._expected_modify = data.get("needModifyCount", 0)
-        self._expected_delete = data.get("needDeleteCount", 0)
+        self._expected_modify = int(data.get("needModifyCount") or 0)
+        self._expected_delete = int(data.get("needDeleteCount") or 0)
         need_upload = data.get("needUploadCount", 0)
 
         self._got_end = True
@@ -471,6 +512,10 @@ class FileSync:
             "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
             last_time, self._expected_modify, self._expected_delete, need_upload,
         )
+
+        total_expected = self._expected_modify + self._expected_delete
+        if total_expected > 0:
+            await self._send_page_ack(self._sync_context, -1, self._sync_vault)
 
         self._check_complete()
 

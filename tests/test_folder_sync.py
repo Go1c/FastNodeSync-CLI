@@ -14,7 +14,10 @@ from fns_cli.protocol import WSMessage
 def _make_engine(vault_path: Path) -> MagicMock:
     config = MagicMock()
     ws = MagicMock()
-    ws.send = AsyncMock()
+    ws.sent = []
+    async def _send(msg):
+        ws.sent.append(msg)
+    ws.send = AsyncMock(side_effect=_send)
 
     engine = MagicMock()
     engine.config = config
@@ -63,6 +66,125 @@ class TestFolderSync(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((self.vault / "foo").exists())
 
+    async def test_folder_sync_pagination_flow(self):
+        self.fs.register_handlers()
+
+        end_msg = WSMessage(
+            "FolderSyncEnd",
+            {
+                "context": "ctx-folder",
+                "vault": "vault-D",
+                "data": {"needModifyCount": 1, "needDeleteCount": 1},
+            },
+        )
+        await self.fs._on_sync_end(end_msg)
+
+        self.assertEqual(len(self.fs.engine.ws_client.sent), 1)
+        self.assertEqual(self.fs.engine.ws_client.sent[0].action, "FolderSyncPageAck")
+        self.assertEqual(self.fs.engine.ws_client.sent[0].data, {"context": "ctx-folder", "pageIndex": -1, "vault": "vault-D"})
+        self.assertFalse(self.fs.is_sync_complete)
+
+        # Simulate 1 modify and 1 delete
+        await self.fs._on_sync_modify(WSMessage("FolderSyncModify", {"path": "folderA"}))
+        await self.fs._on_sync_delete(WSMessage("FolderSyncDelete", {"path": "folderB"}))
+        self.assertEqual(self.fs._received_modify, 1)
+        self.assertEqual(self.fs._received_delete, 1)
+        self.assertTrue(self.fs.is_sync_complete)
+
+    async def test_sync_end_zero_counts_completes_immediately(self):
+        self.fs.register_handlers()
+        end_msg = WSMessage(
+            "FolderSyncEnd",
+            {
+                "context": "ctx-empty",
+                "vault": "vault-D",
+                "data": {"needModifyCount": 0, "needDeleteCount": 0},
+            },
+        )
+        await self.fs._on_sync_end(end_msg)
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(len(self.fs.engine.ws_client.sent), 0)
+
+    async def test_sync_page_ack_and_last_page(self):
+        self.fs.register_handlers()
+        end_msg = WSMessage(
+            "FolderSyncEnd",
+            {
+                "context": "ctx-page",
+                "vault": "vault-D",
+                "data": {"needModifyCount": 1, "needDeleteCount": 0},
+            },
+        )
+        await self.fs._on_sync_end(end_msg)
+        self.assertEqual(len(self.fs.engine.ws_client.sent), 1)
+        self.assertEqual(self.fs.engine.ws_client.sent[0].data["pageIndex"], -1)
+
+        page_msg = WSMessage(
+            "FolderSyncPage",
+            {
+                "context": "ctx-page",
+                "pageIndex": 0,
+                "data": {"pageIndex": 0, "isLast": False},
+            },
+        )
+        await self.fs._on_sync_page(page_msg)
+        self.assertEqual(len(self.fs.engine.ws_client.sent), 2)
+        self.assertEqual(self.fs.engine.ws_client.sent[1].data["pageIndex"], 0)
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_sync_modify(WSMessage("FolderSyncModify", {"path": "folderC"}))
+        last_page_msg = WSMessage(
+            "FolderSyncPage",
+            {
+                "context": "ctx-page",
+                "pageIndex": 1,
+                "data": {"pageIndex": 1, "isLast": True},
+            },
+        )
+        await self.fs._on_sync_page(last_page_msg)
+        self.assertTrue(self.fs.is_sync_complete)
+
+    async def test_reset_counters(self):
+        self.fs._sync_complete = True
+        self.fs._got_end = True
+        self.fs._expected_modify = 5
+        self.fs._received_modify = 5
+        self.fs._sync_context = "ctx"
+        self.fs._sync_vault = "vault"
+
+        self.fs._reset_counters()
+        self.assertFalse(self.fs.is_sync_complete)
+        self.assertFalse(self.fs._got_end)
+        self.assertEqual(self.fs._expected_modify, 0)
+        self.assertEqual(self.fs._received_modify, 0)
+        self.assertEqual(self.fs._sync_context, "")
+        self.assertEqual(self.fs._sync_vault, "")
+
+    async def test_config_dir_events_increment_counters_and_complete_sync(self):
+        self.fs.register_handlers()
+        self.fs.engine.config.sync.config_sync_dirs = [".obsidian"]
+
+        end_msg = WSMessage(
+            "FolderSyncEnd",
+            {
+                "context": "ctx-cfg",
+                "vault": "vault-D",
+                "data": {"needModifyCount": 1, "needDeleteCount": 1},
+            },
+        )
+        await self.fs._on_sync_end(end_msg)
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_sync_modify(WSMessage("FolderSyncModify", {"path": ".obsidian/plugins/foo"}))
+        self.assertEqual(self.fs._received_modify, 1)
+        self.assertFalse(self.fs.is_sync_complete)
+        self.assertFalse((self.vault / ".obsidian/plugins/foo").exists())
+
+        await self.fs._on_sync_delete(WSMessage("FolderSyncDelete", {"path": ".obsidian/themes/bar"}))
+        self.assertEqual(self.fs._received_delete, 1)
+        self.assertTrue(self.fs.is_sync_complete)
+
 
 if __name__ == "__main__":
     unittest.main()
+

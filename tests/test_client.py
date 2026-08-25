@@ -13,6 +13,7 @@ if "yaml" not in sys.modules:
     yaml_stub.safe_load = lambda _stream: {}
     sys.modules["yaml"] = yaml_stub
 
+from fns_cli import protocol
 from fns_cli.client import WSClient
 from fns_cli.protocol import ACTION_CLIENT_INFO, WSMessage
 
@@ -103,5 +104,30 @@ class TestWSClientLoopBinding(unittest.TestCase):
         asyncio.run(probe())
 
 
+class TestProtocolPageConstants(unittest.TestCase):
+
+    def test_protocol_page_constants(self):
+        self.assertEqual(protocol.ACTION_NOTE_SYNC_PAGE, "NoteSyncPage")
+        self.assertEqual(protocol.ACTION_NOTE_SYNC_PAGE_ACK, "NoteSyncPageAck")
+        self.assertEqual(protocol.ACTION_FILE_SYNC_PAGE, "FileSyncPage")
+        self.assertEqual(protocol.ACTION_FILE_SYNC_PAGE_ACK, "FileSyncPageAck")
+        self.assertEqual(protocol.ACTION_SETTING_SYNC_PAGE, "SettingSyncPage")
+        self.assertEqual(protocol.ACTION_SETTING_SYNC_PAGE_ACK, "SettingSyncPageAck")
+        self.assertEqual(protocol.ACTION_FOLDER_SYNC_PAGE, "FolderSyncPage")
+        self.assertEqual(protocol.ACTION_FOLDER_SYNC_PAGE_ACK, "FolderSyncPageAck")
+
+
+class TestWSClientPageAckResponse(unittest.IsolatedAsyncioTestCase):
+
+    async def test_client_handle_text_page_ack_response(self):
+        client = WSClient(_make_config())
+        raw = 'NoteSyncPageAck|{"code": 1, "status": 200, "message": "success"}'
+        with self.assertLogs("fns_cli.client", level="DEBUG") as cm:
+            await client._handle_text(raw)
+        self.assertFalse(any("Unhandled action from server: NoteSyncPageAck" in msg for msg in cm.output))
+        self.assertTrue(any("Received server ack for NoteSyncPageAck" in msg for msg in cm.output))
+
+
 if __name__ == "__main__":
     unittest.main()
+

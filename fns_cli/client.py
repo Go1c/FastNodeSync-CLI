@@ -183,7 +183,10 @@ class WSClient:
             except Exception:
                 log.exception("Handler error for %s", msg.action)
         else:
-            log.warning("Unhandled action from server: %s", msg.action)
+            if msg.action.endswith("PageAck"):
+                log.debug("Received server ack for %s", msg.action)
+            else:
+                log.warning("Unhandled action from server: %s", msg.action)
 
     async def _handle_binary(self, raw: bytes) -> None:
         if self._binary_handler and len(raw) > 42 and raw[:2] == b"00":

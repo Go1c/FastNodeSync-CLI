@@ -18,6 +18,8 @@ from .protocol import (
     ACTION_SETTING_SYNC_MODIFY,
     ACTION_SETTING_SYNC_MTIME,
     ACTION_SETTING_SYNC_NEED_UPLOAD,
+    ACTION_SETTING_SYNC_PAGE,
+    ACTION_SETTING_SYNC_PAGE_ACK,
     ACTION_SETTING_SYNC_RENAME,
     WSMessage,
 )
@@ -75,6 +77,8 @@ class SettingSync:
         self._received_delete = 0
         self._got_end = False
         self._pending_last_time = 0
+        self._sync_context = ""
+        self._sync_vault = ""
         self._echo_hashes: dict[str, str] = {}
 
     @property
@@ -88,6 +92,7 @@ class SettingSync:
         ws.on(ACTION_SETTING_SYNC_RENAME, self._on_sync_rename)
         ws.on(ACTION_SETTING_SYNC_MTIME, self._on_sync_mtime)
         ws.on(ACTION_SETTING_SYNC_NEED_UPLOAD, self._on_sync_need_upload)
+        ws.on(ACTION_SETTING_SYNC_PAGE, self._on_sync_page)
         ws.on(ACTION_SETTING_SYNC_END, self._on_sync_end)
 
     async def request_sync(self) -> None:
@@ -261,9 +266,16 @@ class SettingSync:
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        if isinstance(msg.data, dict):
+            self._sync_context = (msg.data.get("context") or (data.get("context") if isinstance(data, dict) else "") or "")
+            self._sync_vault = (msg.data.get("vault") or (data.get("vault") if isinstance(data, dict) else "") or "")
+        elif isinstance(data, dict):
+            self._sync_context = data.get("context") or ""
+            self._sync_vault = data.get("vault") or ""
+
         last_time = data.get("lastTime", 0)
-        self._expected_modify = data.get("needModifyCount", 0)
-        self._expected_delete = data.get("needDeleteCount", 0)
+        self._expected_modify = int(data.get("needModifyCount") or 0)
+        self._expected_delete = int(data.get("needDeleteCount") or 0)
         self._pending_last_time = last_time
         self._got_end = True
         log.info(
@@ -279,7 +291,32 @@ class SettingSync:
             self._sync_complete = True
             self._commit_last_time()
         else:
+            await self._send_page_ack(self._sync_context, -1, self._sync_vault)
             self._check_all_received()
+
+    async def _send_page_ack(self, context: str, page_index: int, vault: str) -> None:
+        msg = WSMessage(
+            ACTION_SETTING_SYNC_PAGE_ACK,
+            {
+                "context": context,
+                "pageIndex": page_index,
+                "vault": vault,
+            },
+        )
+        await self.engine.ws_client.send(msg)
+
+    async def _on_sync_page(self, msg: WSMessage) -> None:
+        data = _extract_inner(msg.data)
+        page_index = data.get("pageIndex", msg.data.get("pageIndex", 0)) if isinstance(msg.data, dict) else data.get("pageIndex", 0)
+        is_last = data.get("isLast", msg.data.get("isLast", False)) if isinstance(msg.data, dict) else data.get("isLast", False)
+        page_index = int(page_index or 0)
+        is_last = bool(is_last)
+        log.debug("← SettingSyncPage (pageIndex=%d, isLast=%s)", page_index, is_last)
+
+        if not is_last and page_index >= 0:
+            await self._send_page_ack(self._sync_context, page_index, self._sync_vault)
+
+        self._check_all_received()
 
     # ── Internal helpers ─────────────────────────────────────────────
 
@@ -291,6 +328,8 @@ class SettingSync:
         self._received_modify = 0
         self._received_delete = 0
         self._pending_last_time = 0
+        self._sync_context = ""
+        self._sync_vault = ""
 
     def _check_all_received(self) -> None:
         if not self._got_end:

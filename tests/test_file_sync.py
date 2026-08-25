@@ -19,6 +19,8 @@ from fns_cli.protocol import (
     ACTION_FILE_SYNC_CHUNK_DOWNLOAD,
     ACTION_FILE_SYNC_DELETE,
     ACTION_FILE_SYNC_END,
+    ACTION_FILE_SYNC_PAGE,
+    ACTION_FILE_SYNC_PAGE_ACK,
     ACTION_FILE_SYNC_UPDATE,
     WSMessage,
 )
@@ -35,7 +37,10 @@ def _make_engine(vault_path: Path) -> MagicMock:
     state.last_file_sync_time = 0
 
     ws = MagicMock()
-    ws.send = AsyncMock()
+    ws.sent = []
+    async def _send(msg):
+        ws.sent.append(msg)
+    ws.send = AsyncMock(side_effect=_send)
     ws.send_bytes = AsyncMock()
 
     engine = MagicMock()
@@ -526,5 +531,66 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             loop.close()
 
 
+class TestFileSyncPagination(unittest.IsolatedAsyncioTestCase):
+    """Test pagination control flow (`FileSyncPage` / `FileSyncPageAck`)."""
+
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self._tmp.name)
+        self.engine = _make_engine(self.vault)
+        self.fs = FileSync(self.engine)
+
+    async def asyncTearDown(self):
+        self._tmp.cleanup()
+
+    async def test_file_sync_pagination_flow(self):
+        sync = self.fs
+        sync.register_handlers()
+
+        end_msg = WSMessage(
+            "FileSyncEnd",
+            {
+                "context": "ctx-file",
+                "vault": "vault-C",
+                "data": {"lastTime": 3000, "needModifyCount": 1, "needDeleteCount": 0},
+            },
+        )
+        await sync._on_sync_end(end_msg)
+
+        self.assertEqual(len(self.engine.ws_client.sent), 1)
+        self.assertEqual(self.engine.ws_client.sent[0].action, "FileSyncPageAck")
+        self.assertEqual(
+            self.engine.ws_client.sent[0].data,
+            {"context": "ctx-file", "pageIndex": -1, "vault": "vault-C"},
+        )
+        self.assertFalse(sync.is_sync_complete)
+
+        # Simulate FileSyncPage(pageIndex=0, isLast=False)
+        page_msg = WSMessage(
+            "FileSyncPage",
+            {"data": {"pageIndex": 0, "isLast": False, "items": []}},
+        )
+        await sync._on_sync_page(page_msg)
+        self.assertEqual(len(self.engine.ws_client.sent), 2)
+        self.assertEqual(self.engine.ws_client.sent[1].data["pageIndex"], 0)
+
+        # Simulate FileSyncUpdate which initiates a chunk download session
+        sync._received_modify = 1
+        sync._pending_download_paths.add("file1.bin")
+        last_page_msg = WSMessage(
+            "FileSyncPage",
+            {"data": {"pageIndex": 1, "isLast": True, "items": []}},
+        )
+        await sync._on_sync_page(last_page_msg)
+        # Even though isLast=True arrived, is_sync_complete must still be False because download is pending!
+        self.assertFalse(sync.is_sync_complete)
+
+        # Now finish the pending download
+        sync._pending_download_paths.clear()
+        sync._check_complete()
+        self.assertTrue(sync.is_sync_complete)
+
+
 if __name__ == "__main__":
     unittest.main()
+
