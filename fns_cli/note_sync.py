@@ -50,6 +50,8 @@ class NoteSync:
         self._sync_complete = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
         self._got_end = False
@@ -257,6 +259,10 @@ class NoteSync:
                 self._try_remove_empty_parent(old_full)
         except Exception:
             log.exception("Failed to rename %s → %s", old_path, new_path)
+        # NoteSyncRename is delivered through the paged download channel; credit
+        # it so _check_all_received can finish when only renames were requested.
+        self._received_modify += 1
+        self._check_all_received()
 
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -271,6 +277,10 @@ class NoteSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
+        # NoteSyncMtime is counted in needSyncMtimeCount; credit it so
+        # _check_all_received can finish when only mtime updates were requested.
+        self._received_modify += 1
+        self._check_all_received()
 
     async def _on_sync_need_push(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -281,6 +291,10 @@ class NoteSync:
         # NeedPush is an explicit server request to re-send the local content;
         # it must bypass the normal echo suppression check.
         await self.push_modify(rel_path, force=True)
+        # NoteSyncNeedPush is counted in needUploadCount; credit it so
+        # _check_all_received can finish when only uploads were requested.
+        self._received_modify += 1
+        self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -305,7 +319,16 @@ class NoteSync:
             data.get("needUploadCount", 0),
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        # The server batches download items (NoteSyncNeedPush / NoteSyncModify /
+        # NoteSyncMtime / NoteSyncDelete) into paged frames. It only sends a page
+        # after the client sends the initial pull ack (pageIndex=-1). needUpload,
+        # needModify, needSyncMtime and needDelete all describe items the server
+        # will deliver through this paged channel, so the initial ack must be sent
+        # whenever ANY of them is non-zero — otherwise the page is never sent and
+        # uploads/remote modifications are silently dropped.
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
+        total_expected = self._expected_modify + self._expected_delete + self._expected_upload + self._expected_mtime
         if total_expected == 0:
             self._sync_complete = True
             self._commit_last_time()
@@ -344,6 +367,8 @@ class NoteSync:
         self._got_end = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
         self._pending_last_time = 0
@@ -353,7 +378,7 @@ class NoteSync:
     def _check_all_received(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_modify + self._expected_delete + self._expected_upload + self._expected_mtime
         total_received = self._received_modify + self._received_delete
         if total_received >= total_expected:
             log.info(

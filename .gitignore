@@ -13,3 +13,8 @@ build/
 # Local integration test artifacts — not committed
 test_sync_local.py
 test_sync_report.log
+
+# local test artifacts (Fast Note Sync investigation)
+.venv/
+config-test.yaml
+vault/

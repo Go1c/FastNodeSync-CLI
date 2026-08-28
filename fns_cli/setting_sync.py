@@ -73,6 +73,8 @@ class SettingSync:
         self._sync_complete = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
         self._got_end = False
@@ -252,6 +254,10 @@ class SettingSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
+        # SettingSyncMtime is counted in needSyncMtimeCount; credit it so
+        # _check_all_received can finish when only mtime updates were requested.
+        self._received_modify += 1
+        self._check_all_received()
 
     async def _on_sync_need_upload(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -263,6 +269,12 @@ class SettingSync:
             rel_path = item.get("path", "") if isinstance(item, dict) else str(item)
             if rel_path:
                 await self.push_modify(rel_path)
+        # The server reports these items via needUploadCount and delivers them
+        # through the paged download channel. Credit them to the received count
+        # so _check_all_received can complete when only uploads were requested;
+        # without this the initial pull ack is never triggered either.
+        self._received_modify += len(need_upload)
+        self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -286,7 +298,15 @@ class SettingSync:
             data.get("needUploadCount", 0),
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        # Settings detail frames (SettingSyncModify / SettingSyncDelete /
+        # SettingSyncMtime / SettingSyncNeedUpload) are delivered through the
+        # same paged download channel. The initial pull ack (pageIndex=-1)
+        # must be sent whenever ANY of these is non-zero, otherwise the server
+        # never sends the page and uploads/mtime updates are silently dropped
+        # (same bug class as NoteSync).
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
+        total_expected = self._expected_modify + self._expected_delete + self._expected_upload + self._expected_mtime
         if total_expected == 0:
             self._sync_complete = True
             self._commit_last_time()
@@ -325,6 +345,8 @@ class SettingSync:
         self._got_end = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
         self._pending_last_time = 0
@@ -334,7 +356,7 @@ class SettingSync:
     def _check_all_received(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_modify + self._expected_delete + self._expected_upload + self._expected_mtime
         total_received = self._received_modify + self._received_delete
         if total_received >= total_expected:
             log.info(
