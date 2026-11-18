@@ -77,6 +77,32 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self._tmp.cleanup()
 
+    async def test_excluded_messages_skip_disk_changes_and_count(self):
+        self.engine.is_excluded.side_effect = lambda path: path.startswith(".trash/")
+        await self.sync._on_sync_modify(WSMessage("SettingSyncModify", {
+            "data": {"path": ".trash/new.json", "content": "remote"},
+        }))
+        self.assertFalse((self.vault / ".trash" / "new.json").exists())
+        self.assertEqual(self.sync._received_modify, 1)
+
+        keep = self.vault / ".trash" / "keep.json"
+        keep.parent.mkdir()
+        keep.write_text("local", encoding="utf-8")
+        await self.sync._on_sync_delete(WSMessage("SettingSyncDelete", {
+            "data": {"path": ".trash/keep.json"},
+        }))
+        self.assertTrue(keep.exists())
+        self.assertEqual(self.sync._received_delete, 1)
+
+        old = self.vault / ".obsidian" / "old.json"
+        old.parent.mkdir()
+        old.write_text("local", encoding="utf-8")
+        await self.sync._on_sync_rename(WSMessage("SettingSyncRename", {
+            "data": {"oldPath": ".obsidian/old.json", "path": ".trash/new.json"},
+        }))
+        self.assertTrue(old.exists())
+        self.assertFalse((self.vault / ".trash" / "new.json").exists())
+
     async def test_setting_sync_pagination_flow(self):
         self.sync.register_handlers()
 

@@ -184,6 +184,12 @@ class SettingSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncModify for excluded path: %s", rel_path)
+            self._received_modify += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +211,12 @@ class SettingSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncDelete for excluded path: %s", rel_path)
+            self._received_delete += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             if full.exists():
@@ -223,6 +235,10 @@ class SettingSync:
         old_path: str = data.get("oldPath", "")
         new_path: str = data.get("path", "")
         if not old_path or not new_path:
+            return
+
+        if self.engine.is_excluded(old_path) or self.engine.is_excluded(new_path):
+            log.debug("Ignoring SettingSyncRename for excluded path: %s → %s", old_path, new_path)
             return
 
         self._echo_hashes[old_path] = _DELETED

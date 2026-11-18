@@ -91,6 +91,12 @@ class FolderSync:
             self._check_all_received()
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring FolderSyncModify for excluded path: %s", rel_path)
+            self._received_modify += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             full.mkdir(parents=True, exist_ok=True)
@@ -115,6 +121,12 @@ class FolderSync:
             self._check_all_received()
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring FolderSyncDelete for excluded path: %s", rel_path)
+            self._received_delete += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             if full.exists():
@@ -131,6 +143,10 @@ class FolderSync:
         old_path: str = data.get("oldPath", "")
         new_path: str = data.get("path", "")
         if not old_path or not new_path:
+            return
+
+        if self.engine.is_excluded(old_path) or self.engine.is_excluded(new_path):
+            log.debug("Ignoring FolderSyncRename for excluded path: %s → %s", old_path, new_path)
             return
 
         if self._is_config_dir(old_path) or self._is_config_dir(new_path):

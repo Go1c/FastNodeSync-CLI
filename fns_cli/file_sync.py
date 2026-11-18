@@ -290,6 +290,12 @@ class FileSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring FileSyncUpdate for excluded path: %s", rel_path)
+            self._received_modify += 1
+            self._check_complete()
+            return
+
         if content is None:
             # Attachment files: server sends metadata only, we must request
             # a chunked download via FileChunkDownload.
@@ -338,6 +344,12 @@ class FileSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring FileSyncDelete for excluded path: %s", rel_path)
+            self._received_delete += 1
+            self._check_complete()
+            return
+
         self._echo_hashes[rel_path] = _DELETED
 
         full = self.vault_path / rel_path
@@ -358,6 +370,10 @@ class FileSync:
         old_path: str = data.get("oldPath", "")
         new_path: str = data.get("path", "")
         if not old_path or not new_path:
+            return
+
+        if self.engine.is_excluded(old_path) or self.engine.is_excluded(new_path):
+            log.debug("Ignoring FileSyncRename for excluded path: %s → %s", old_path, new_path)
             return
 
         # The rename arrives as a single server message but the watcher will
@@ -428,6 +444,12 @@ class FileSync:
     async def _finalize_download(self, session_id: str, session: _DownloadSession) -> None:
         self._mark_sync_activity()
         rel_path = session.path
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring chunked download for excluded path: %s", rel_path)
+            self._download_sessions.pop(session_id, None)
+            self._pending_download_paths.discard(rel_path)
+            self._check_complete()
+            return
         full = self.vault_path / rel_path
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +468,11 @@ class FileSync:
 
     async def _finalize_empty_download(self, rel_path: str) -> None:
         self._mark_sync_activity()
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring zero-chunk download for excluded path: %s", rel_path)
+            self._pending_download_paths.discard(rel_path)
+            self._check_complete()
+            return
         full = self.vault_path / rel_path
         try:
             if full.exists() and full.is_dir():

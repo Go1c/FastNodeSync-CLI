@@ -23,6 +23,7 @@ def _make_engine(vault_path: Path) -> MagicMock:
     engine.config = config
     engine.vault_path = vault_path
     engine.ws_client = ws
+    engine.is_excluded = MagicMock(return_value=False)
     return engine
 
 
@@ -159,6 +160,30 @@ class TestFolderSync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fs._received_modify, 0)
         self.assertEqual(self.fs._sync_context, "")
         self.assertEqual(self.fs._sync_vault, "")
+
+    async def test_excluded_folder_events_skip_disk_changes_and_count(self):
+        self.fs.engine.is_excluded = lambda path: path.startswith(".trash/")
+        await self.fs._on_sync_modify(_wrap("FolderSyncModify", {
+            "path": ".trash/new",
+        }))
+        self.assertFalse((self.vault / ".trash" / "new").exists())
+        self.assertEqual(self.fs._received_modify, 1)
+
+        keep = self.vault / ".trash" / "keep"
+        keep.mkdir(parents=True)
+        await self.fs._on_sync_delete(_wrap("FolderSyncDelete", {
+            "path": ".trash/keep",
+        }))
+        self.assertTrue(keep.exists())
+        self.assertEqual(self.fs._received_delete, 1)
+
+        old = self.vault / "folder" / "old"
+        old.mkdir(parents=True)
+        await self.fs._on_sync_rename(_wrap("FolderSyncRename", {
+            "oldPath": "folder/old", "path": ".trash/new",
+        }))
+        self.assertTrue(old.exists())
+        self.assertFalse((self.vault / ".trash" / "new").exists())
 
     async def test_config_dir_events_increment_counters_and_complete_sync(self):
         self.fs.register_handlers()

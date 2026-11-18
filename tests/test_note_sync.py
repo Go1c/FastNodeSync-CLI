@@ -85,6 +85,31 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.vault / "folder" / "old.md").exists())
         self.assertEqual((self.vault / "folder" / "new.md").read_text(encoding="utf-8"), "hello")
 
+    async def test_excluded_messages_skip_disk_changes_and_count(self):
+        self.engine.is_excluded.side_effect = lambda path: path.startswith(".trash/")
+        excluded = self.vault / ".trash" / "keep.md"
+        excluded.parent.mkdir()
+        excluded.write_text("local", encoding="utf-8")
+
+        await self.ns._on_sync_modify(_wrap(ACTION_NOTE_SYNC_MODIFY, {
+            "path": ".trash/new.md", "content": "remote",
+        }))
+        self.assertFalse((self.vault / ".trash" / "new.md").exists())
+        self.assertEqual(self.ns._received_modify, 1)
+
+        await self.ns._on_sync_delete(_wrap("NoteSyncDelete", {"path": ".trash/keep.md"}))
+        self.assertEqual(excluded.read_text(encoding="utf-8"), "local")
+        self.assertEqual(self.ns._received_delete, 1)
+
+        old = self.vault / "folder" / "old.md"
+        old.parent.mkdir()
+        old.write_text("local", encoding="utf-8")
+        await self.ns._on_sync_rename(_wrap(ACTION_NOTE_SYNC_RENAME, {
+            "oldPath": "folder/old.md", "path": ".trash/new.md",
+        }))
+        self.assertTrue(old.exists())
+        self.assertFalse((self.vault / ".trash" / "new.md").exists())
+
     async def test_note_sync_pagination_flow(self):
         self.ns.register_handlers()
 
