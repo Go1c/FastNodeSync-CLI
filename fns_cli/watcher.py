@@ -46,6 +46,10 @@ class _VaultEventHandler(FileSystemEventHandler):
             return None
 
     def _schedule(self, key: str, coro_factory):
+        # Watchdog calls us on a worker thread; asyncio is only thread-safe here.
+        self.loop.call_soon_threadsafe(self._schedule_on_loop, key, coro_factory)
+
+    def _schedule_on_loop(self, key: str, coro_factory):
         handle = self._pending.pop(key, None)
         if handle:
             handle.cancel()

@@ -375,6 +375,11 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
         handler = _VaultEventHandler(engine, loop)
         return handler, engine, loop
 
+    def _flush_scheduled(self, loop, handler):
+        loop.run_until_complete(asyncio.sleep(0))
+        for handle in handler._pending.values():
+            handle.cancel()
+
     def test_move_ignored_src_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
@@ -411,6 +416,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             ev = FileMovedEvent(str(vault / "old.png"), str(vault / "new.png"))
             handler.on_moved(ev)
 
+            self._flush_scheduled(loop, handler)
             self.assertIn("mv:old.png:new.png", handler._pending)
             # cancel to avoid loop cleanup issues
             handler._pending["mv:old.png:new.png"].cancel()
@@ -432,6 +438,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             )
             handler.on_moved(ev)
 
+            self._flush_scheduled(loop, handler)
             self.assertIn("del:old.png", handler._pending)
             handler._pending["del:old.png"].cancel()
             loop.close()
@@ -450,6 +457,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
                 )
                 handler.on_moved(ev)
 
+                self._flush_scheduled(loop, handler)
                 self.assertIn("mod:incoming.png", handler._pending)
                 handler._pending["mod:incoming.png"].cancel()
                 loop.close()
@@ -472,6 +480,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
                 )
                 handler.on_moved(ev)
 
+                self._flush_scheduled(loop, handler)
                 self.assertIn("del:outgoing.png", handler._pending)
                 handler._pending["del:outgoing.png"].cancel()
                 loop.close()
@@ -500,6 +509,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             )
             handler.on_moved(ev)
 
+            self._flush_scheduled(loop, handler)
             self.assertIn("del:old/a.txt", handler._pending)
             self.assertIn("del:old/b.txt", handler._pending)
             handler._pending["del:old/a.txt"].cancel()
@@ -522,6 +532,7 @@ class TestFileSyncWatcherIgnore(unittest.TestCase):
             ev = DirDeletedEvent(str(vault / "12345"))
             handler.on_deleted(ev)
 
+            self._flush_scheduled(loop, handler)
             self.assertIn("del:12345/a.md", handler._pending)
             self.assertIn("del:12345/b.png", handler._pending)
             self.assertIn("del:12345/nested/c.txt", handler._pending)
