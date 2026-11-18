@@ -328,6 +328,66 @@ class TestFileSyncDeleteCounter(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(*self.fs._upload_tasks), timeout=1)
 
 
+class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
+
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self._tmp.name)
+        self.engine = _make_engine(self.vault)
+        self.fs = FileSync(self.engine)
+
+    async def asyncTearDown(self):
+        for worker in self.fs._upload_workers:
+            worker.cancel()
+        await asyncio.gather(*self.fs._upload_workers, return_exceptions=True)
+        self._tmp.cleanup()
+
+    async def test_upload_only_sync_does_not_wait_for_upload_completion(self):
+        target = self.vault / "offline.bin"
+        target.write_bytes(b"offline")
+        gate = asyncio.Event()
+        self.engine.ws_client.send_bytes.side_effect = lambda _data: gate.wait()
+
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5678,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
+        self.assertFalse(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 0)
+
+        await self.fs._on_upload_session(_wrap("FileUpload", {
+            "sessionId": "12345678-1234-1234-1234-123456789012",
+            "path": "offline.bin", "chunkSize": 7,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 5678)
+        gate.set()
+        await asyncio.gather(*self.fs._upload_tasks)
+
+    async def test_mtime_only_sync_waits_for_mtime_detail(self):
+        target = self.vault / "note.bin"
+        target.write_bytes(b"same")
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 6789,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 0,
+            "needSyncMtimeCount": 1,
+        }))
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
+            "path": "note.bin", "mtime": 1000000,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
+        self.assertEqual(self.engine.state.last_file_sync_time, 6789)
+
+
 class TestFileSyncLoopBinding(unittest.TestCase):
 
     def test_upload_workers_use_running_loop_when_file_sync_created_before_loop(self):

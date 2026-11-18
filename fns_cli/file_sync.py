@@ -73,8 +73,12 @@ class FileSync:
         self._pending_download_paths: set[str] = set()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context: str = ""
@@ -117,8 +121,12 @@ class FileSync:
         self._pending_download_paths.clear()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
@@ -132,8 +140,8 @@ class FileSync:
             return False
         if self._pending_download_paths or self._download_sessions:
             return False
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             return False
         return (time.monotonic() - self._last_sync_activity_monotonic) >= stale_seconds
@@ -199,6 +207,9 @@ class FileSync:
 
         if not session_id or not rel_path:
             return
+
+        self._received_upload += 1
+        self._check_complete()
 
         full = self.vault_path / rel_path
         if not full.exists():
@@ -390,6 +401,8 @@ class FileSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
+        self._received_mtime += 1
+        self._check_complete()
 
     async def _on_chunk_download_start(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -505,15 +518,16 @@ class FileSync:
         self._pending_last_time = last_time
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
-        need_upload = data.get("needUploadCount", 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
 
         self._got_end = True
         log.info(
             "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
-            last_time, self._expected_modify, self._expected_delete, need_upload,
+            last_time, self._expected_modify, self._expected_delete, self._expected_upload,
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected > 0:
             await self._send_page_ack(self._sync_context, -1, self._sync_vault)
 
@@ -522,12 +536,13 @@ class FileSync:
     def _check_complete(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected and not self._pending_download_paths and not self._download_sessions:
             log.info(
-                "FileSync complete: %d modified, %d deleted",
-                self._received_modify, self._received_delete,
+                "FileSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload, self._received_modify,
+                self._received_mtime, self._received_delete,
             )
             self._sync_complete = True
             self._commit_last_time()

@@ -77,6 +77,71 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self._tmp.cleanup()
 
+    async def test_upload_only_sync_handles_single_path_detail(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("offline edit", encoding="utf-8")
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 7890,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 1,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
+        self.assertFalse(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 0)
+
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {"path": ".obsidian/app.json"},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 7890)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
+
+    async def test_legacy_upload_list_counts_each_detail(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("offline edit", encoding="utf-8")
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8901,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 1,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {"needUpload": [{"path": ".obsidian/app.json"}]},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
+
+    async def test_mtime_only_sync_waits_for_mtime_detail(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("same", encoding="utf-8")
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 9012,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 0,
+                "needSyncMtimeCount": 1,
+            },
+        }))
+        self.assertFalse(self.sync.is_sync_complete)
+
+        await self.sync._on_sync_mtime(WSMessage("SettingSyncMtime", {
+            "data": {"path": ".obsidian/app.json", "mtime": 1000000},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 9012)
+
     async def test_setting_sync_pagination_flow(self):
         self.sync.register_handlers()
 

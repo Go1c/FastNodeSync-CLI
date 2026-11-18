@@ -85,6 +85,45 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.vault / "folder" / "old.md").exists())
         self.assertEqual((self.vault / "folder" / "new.md").read_text(encoding="utf-8"), "hello")
 
+    async def test_upload_only_sync_waits_for_need_push_detail(self):
+        target = self.vault / "offline.md"
+        target.write_text("offline edit", encoding="utf-8")
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 3456,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
+        self.assertFalse(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 0)
+
+        await self.ns._on_sync_need_push(_wrap("NoteSyncNeedPush", {"path": "offline.md"}))
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 3456)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "NoteModify")
+
+    async def test_mtime_only_sync_commits_after_mtime_detail(self):
+        target = self.vault / "note.md"
+        target.write_text("same", encoding="utf-8")
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 4567,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 0,
+            "needSyncMtimeCount": 1,
+        }))
+        self.assertFalse(self.ns.is_sync_complete)
+
+        await self.ns._on_sync_mtime(_wrap("NoteSyncMtime", {
+            "path": "note.md", "mtime": 1000000,
+        }))
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
+        self.assertEqual(self.engine.state.last_note_sync_time, 4567)
+
     async def test_note_sync_pagination_flow(self):
         self.ns.register_handlers()
 

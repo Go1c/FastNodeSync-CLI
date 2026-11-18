@@ -50,8 +50,12 @@ class NoteSync:
         self._sync_complete = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context = ""
@@ -271,6 +275,8 @@ class NoteSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
+        self._received_mtime += 1
+        self._check_all_received()
 
     async def _on_sync_need_push(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -281,6 +287,8 @@ class NoteSync:
         # NeedPush is an explicit server request to re-send the local content;
         # it must bypass the normal echo suppression check.
         await self.push_modify(rel_path, force=True)
+        self._received_upload += 1
+        self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -294,6 +302,8 @@ class NoteSync:
         last_time = data.get("lastTime", 0)
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
         self._pending_last_time = last_time
 
         self._got_end = True
@@ -305,7 +315,7 @@ class NoteSync:
             data.get("needUploadCount", 0),
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected == 0:
             self._sync_complete = True
             self._commit_last_time()
@@ -344,8 +354,12 @@ class NoteSync:
         self._got_end = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
@@ -353,12 +367,14 @@ class NoteSync:
     def _check_all_received(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             log.info(
-                "NoteSync complete: %d modified, %d deleted",
+                "NoteSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload,
                 self._received_modify,
+                self._received_mtime,
                 self._received_delete,
             )
             self._sync_complete = True
