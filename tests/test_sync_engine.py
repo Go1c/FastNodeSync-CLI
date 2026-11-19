@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fns_cli.sync_engine import SyncEngine
 
@@ -77,18 +77,26 @@ class TestIsExcludedUnsafePaths(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = _make_engine([".trash/**", "*.tmp"])
 
-    def test_absolute_and_drive_paths_are_excluded(self):
+    def test_absolute_paths_are_excluded(self):
         for path in (
             "/etc/passwd",
             "/absolute/note.md",
             "\\server\\share\\note.md",
             "\\absolute",
-            "C:\\Windows\\note.md",
-            "C:/Windows/note.md",
-            "C:note.md",
         ):
             with self.subTest(path=path):
                 self.assertTrue(self.engine.is_excluded(path))
+
+    def test_drive_prefix_is_only_unsafe_on_windows(self):
+        with patch("fns_cli.sync_engine._IS_WINDOWS", False):
+            for path in ("C:note.md", "a:b/c.md"):
+                with self.subTest(platform="posix", path=path):
+                    self.assertFalse(self.engine.is_excluded(path))
+
+        with patch("fns_cli.sync_engine._IS_WINDOWS", True):
+            for path in ("C:note.md", "C:\\x", "C:/x"):
+                with self.subTest(platform="windows", path=path):
+                    self.assertTrue(self.engine.is_excluded(path))
 
     def test_parent_directory_segments_are_excluded(self):
         for path in (

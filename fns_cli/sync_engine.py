@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
+import os
 import posixpath
 import re
 from pathlib import Path
@@ -20,6 +21,7 @@ from .state import SyncState
 log = logging.getLogger("fns_cli.sync_engine")
 
 _DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
+_IS_WINDOWS = os.name == "nt"
 
 
 def _is_unsafe_rel_path(rel_path: str) -> bool:
@@ -27,7 +29,11 @@ def _is_unsafe_rel_path(rel_path: str) -> bool:
     if "\x00" in rel_path:
         return True
     rel_path = rel_path.replace("\\", "/")
-    if rel_path.startswith("/") or _DRIVE_PREFIX_RE.match(rel_path):
+    if rel_path.startswith("/"):
+        return True
+    # "C:x" only escapes the vault on Windows; on POSIX it is a plain
+    # file name.
+    if _IS_WINDOWS and _DRIVE_PREFIX_RE.match(rel_path):
         return True
     return any(part == ".." for part in rel_path.split("/"))
 
