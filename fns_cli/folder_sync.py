@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import shutil
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -107,6 +107,48 @@ class FolderSync:
         self._received_modify += 1
         self._check_all_received()
 
+    def _delete_preserving_excluded(self, full: Path, rel_path: str) -> int:
+        """Delete a directory tree, keeping paths matched by exclude rules.
+
+        Returns the number of preserved entries. Symlinks are unlinked
+        without following them.
+        """
+        preserved = 0
+        for root, dirs, files in os.walk(full, topdown=False):
+            root_path = Path(root)
+            rel_root = root_path.relative_to(full)
+            prefix = (
+                rel_path
+                if str(rel_root) == "."
+                else f"{rel_path}/{rel_root.as_posix()}"
+            )
+
+            for name in files:
+                child = root_path / name
+                if self.engine.is_excluded(f"{prefix}/{name}"):
+                    preserved += 1
+                    continue
+                child.unlink()
+
+            for name in dirs:
+                child = root_path / name
+                if child.is_symlink():
+                    child.unlink()
+                    continue
+                if self.engine.is_excluded(f"{prefix}/{name}"):
+                    preserved += 1
+                    continue
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass
+
+        try:
+            full.rmdir()
+        except OSError:
+            pass
+        return preserved
+
     async def _on_sync_delete(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
@@ -129,9 +171,19 @@ class FolderSync:
 
         full = self.vault_path / rel_path
         try:
-            if full.exists():
-                shutil.rmtree(full)
+            if full.is_symlink():
+                full.unlink()
                 log.info("← FolderSyncDelete: %s", rel_path)
+            elif full.is_dir():
+                preserved = self._delete_preserving_excluded(full, rel_path)
+                if preserved:
+                    log.info(
+                        "← FolderSyncDelete: %s (kept %d excluded item(s))",
+                        rel_path,
+                        preserved,
+                    )
+                else:
+                    log.info("← FolderSyncDelete: %s", rel_path)
         except Exception:
             log.exception("Failed to delete folder %s", rel_path)
 
