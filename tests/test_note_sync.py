@@ -124,6 +124,33 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_note_sync_time, 4567)
 
+    async def test_need_push_without_path_still_counts(self):
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 3457,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        self.assertFalse(self.ns.is_sync_complete)
+
+        await self.ns._on_sync_need_push(_wrap("NoteSyncNeedPush", {}))
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 3457)
+
+    async def test_need_push_missing_file_still_counts(self):
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 3458,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        await self.ns._on_sync_need_push(_wrap("NoteSyncNeedPush", {"path": "gone.md"}))
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 3458)
+        self.assertNotIn("NoteModify", [m.action for m in self.engine.ws_client.sent])
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / "note.md"
         target.write_text("same", encoding="utf-8")

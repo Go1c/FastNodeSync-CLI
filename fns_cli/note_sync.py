@@ -284,14 +284,18 @@ class NoteSync:
     async def _on_sync_need_push(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
-        if not rel_path:
-            return
-        log.info("← NoteSyncNeedPush: %s", rel_path)
-        # NeedPush is an explicit server request to re-send the local content;
-        # it must bypass the normal echo suppression check.
-        await self.push_modify(rel_path, force=True)
-        self._received_upload += 1
-        self._check_all_received()
+        try:
+            if not rel_path:
+                return
+            log.info("← NoteSyncNeedPush: %s", rel_path)
+            # NeedPush is an explicit server request to re-send the local content;
+            # it must bypass the normal echo suppression check.
+            await self.push_modify(rel_path, force=True)
+        finally:
+            # Count on arrival (see _on_sync_mtime): a detail the server sent
+            # must advance this round even if we cannot act on it.
+            self._received_upload += 1
+            self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

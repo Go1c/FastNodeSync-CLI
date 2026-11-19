@@ -142,6 +142,40 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_setting_sync_time, 9012)
 
+    async def test_upload_detail_without_path_still_counts(self):
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8902,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 1,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+        self.assertFalse(self.sync.is_sync_complete)
+
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 8902)
+
+    async def test_legacy_upload_list_without_paths_counts_once(self):
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8903,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 1,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {"needUpload": [{}]},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 8903)
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / ".obsidian" / "app.json"
         target.parent.mkdir()

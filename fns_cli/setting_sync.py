@@ -267,21 +267,32 @@ class SettingSync:
         need_upload = data.get("needUpload", [])
         if isinstance(need_upload, list) and need_upload:
             log.info("← SettingSyncNeedUpload: %d files", len(need_upload))
-            for item in need_upload:
-                rel_path = item.get("path", "") if isinstance(item, dict) else str(item)
-                if rel_path:
+            # Legacy list form: one count per entry. If no entry yields a
+            # path, count the frame once so the round can still complete.
+            paths = [
+                item.get("path", "") if isinstance(item, dict) else str(item)
+                for item in need_upload
+            ]
+            paths = [p for p in paths if p]
+            try:
+                for rel_path in paths:
                     await self.push_modify(rel_path)
-                    self._received_upload += 1
-                    self._check_all_received()
+            finally:
+                self._received_upload += max(len(paths), 1)
+                self._check_all_received()
             return
 
         rel_path = data.get("path", "")
-        if not rel_path:
-            return
-        log.info("← SettingSyncNeedUpload: %s", rel_path)
-        await self.push_modify(rel_path)
-        self._received_upload += 1
-        self._check_all_received()
+        try:
+            if not rel_path:
+                return
+            log.info("← SettingSyncNeedUpload: %s", rel_path)
+            await self.push_modify(rel_path)
+        finally:
+            # Count on arrival (see _on_sync_mtime): a detail the server sent
+            # must advance this round even if we cannot act on it.
+            self._received_upload += 1
+            self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

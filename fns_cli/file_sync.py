@@ -205,25 +205,28 @@ class FileSync:
         chunk_size: int = data.get("chunkSize", self.config.sync.file_chunk_size)
         rel_path: str = data.get("path", "")
 
-        if not session_id or not rel_path:
-            return
+        try:
+            if not session_id or not rel_path:
+                return
 
-        self._received_upload += 1
-        self._check_complete()
+            full = self.vault_path / rel_path
+            if not full.exists():
+                log.warning("Upload requested but file missing: %s", rel_path)
+                return
 
-        full = self.vault_path / rel_path
-        if not full.exists():
-            log.warning("Upload requested but file missing: %s", rel_path)
-            return
-
-        await self._ensure_upload_workers()
-        completion = asyncio.get_running_loop().create_future()
-        await self._ensure_upload_queue().put(
-            (session_id, chunk_size, rel_path, full, completion)
-        )
-        task = asyncio.create_task(self._await_upload_completion(completion))
-        self._upload_tasks.add(task)
-        task.add_done_callback(self._upload_tasks.discard)
+            await self._ensure_upload_workers()
+            completion = asyncio.get_running_loop().create_future()
+            await self._ensure_upload_queue().put(
+                (session_id, chunk_size, rel_path, full, completion)
+            )
+            task = asyncio.create_task(self._await_upload_completion(completion))
+            self._upload_tasks.add(task)
+            task.add_done_callback(self._upload_tasks.discard)
+        finally:
+            # Count on arrival (see _on_sync_mtime), after the upload task is
+            # registered so a caller that observes completion can wait for it.
+            self._received_upload += 1
+            self._check_complete()
 
     def _ensure_upload_queue(self) -> asyncio.Queue:
         if self._upload_queue is None:

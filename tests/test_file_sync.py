@@ -387,6 +387,62 @@ class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_file_sync_time, 6789)
 
+    async def test_upload_detail_missing_file_still_counts(self):
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5679,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_upload_session(_wrap("FileUpload", {
+            "sessionId": "12345678-1234-1234-1234-123456789012",
+            "path": "gone.bin", "chunkSize": 7,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 5679)
+
+    async def test_upload_detail_without_session_still_counts(self):
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5680,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        await self.fs._on_upload_session(_wrap("FileUpload", {"path": "x.bin"}))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 5680)
+
+    async def test_upload_task_registered_before_round_completes(self):
+        target = self.vault / "asset.bin"
+        target.write_bytes(b"abc")
+        gate = asyncio.Event()
+
+        async def blocked_send_bytes(_data):
+            await gate.wait()
+
+        self.engine.ws_client.send_bytes.side_effect = blocked_send_bytes
+
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5681,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+        await self.fs._on_upload_session(_wrap("FileUpload", {
+            "sessionId": "12345678-1234-1234-1234-123456789012",
+            "path": "asset.bin", "chunkSize": 1,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(len(self.fs._upload_tasks), 1)
+
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(*self.fs._upload_tasks), timeout=1)
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / "note.bin"
         target.write_bytes(b"same")
