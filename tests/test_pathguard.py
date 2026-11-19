@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from fns_cli.pathguard import is_safe_rel_path
 
@@ -27,10 +29,22 @@ class TestIsSafeRelPath(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(is_safe_rel_path(path))
 
-    def test_drive_prefix_is_unsafe(self):
-        for path in ("C:temp", "c:\\temp\\x", "Z:"):
+    def test_drive_prefix_is_safe_on_posix(self):
+        # On POSIX "C:note.md" is an ordinary file name inside the vault.
+        for path in ("C:temp", "C:note.md", "Z:"):
             with self.subTest(path=path):
-                self.assertFalse(is_safe_rel_path(path))
+                self.assertTrue(is_safe_rel_path(path, windows=False))
+
+    def test_drive_prefix_is_unsafe_on_windows(self):
+        for path in ("C:temp", "C:note.md", "C:\\x", "C:/x", "c:\\temp\\x", "Z:"):
+            with self.subTest(path=path):
+                self.assertFalse(is_safe_rel_path(path, windows=True))
+
+    def test_drive_prefix_follows_platform_by_default(self):
+        self.assertEqual(
+            is_safe_rel_path("C:note.md"),
+            os.name != "nt",
+        )
 
     def test_parent_segments_are_unsafe(self):
         for path in ("../secret", "a/../../b", "a/..", "..\\secret", "a\\..\\b", ".."):
