@@ -176,6 +176,36 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.sync.is_sync_complete)
         self.assertEqual(self.engine.state.last_setting_sync_time, 8903)
 
+    async def test_upload_request_bypasses_echo_cache(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("cached", encoding="utf-8")
+        # Prime the echo cache with the current on-disk hash, as a normal
+        # watcher push would. Without force=True the upload would be skipped.
+        await self.sync.push_modify(".obsidian/app.json")
+        sent_before = len(self.engine.ws_client.sent)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
+
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {"path": ".obsidian/app.json"},
+        }))
+        self.assertEqual(len(self.engine.ws_client.sent), sent_before + 1)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
+        self.assertEqual(self.engine.ws_client.sent[-1].data["content"], "cached")
+
+    async def test_legacy_upload_list_bypasses_echo_cache(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("cached", encoding="utf-8")
+        await self.sync.push_modify(".obsidian/app.json")
+        sent_before = len(self.engine.ws_client.sent)
+
+        await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+            "data": {"needUpload": [{"path": ".obsidian/app.json"}]},
+        }))
+        self.assertEqual(len(self.engine.ws_client.sent), sent_before + 1)
+        self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / ".obsidian" / "app.json"
         target.parent.mkdir()

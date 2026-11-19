@@ -276,7 +276,7 @@ class SettingSync:
             paths = [p for p in paths if p]
             try:
                 for rel_path in paths:
-                    await self.push_modify(rel_path)
+                    await self.push_modify(rel_path, force=True)
             finally:
                 self._received_upload += max(len(paths), 1)
                 self._check_all_received()
@@ -287,7 +287,9 @@ class SettingSync:
             if not rel_path:
                 return
             log.info("← SettingSyncNeedUpload: %s", rel_path)
-            await self.push_modify(rel_path)
+            # An explicit upload request from the server must bypass echo
+            # suppression, same as NoteSync's NeedPush handler.
+            await self.push_modify(rel_path, force=True)
         finally:
             # Count on arrival (see _on_sync_mtime): a detail the server sent
             # must advance this round even if we cannot act on it.
