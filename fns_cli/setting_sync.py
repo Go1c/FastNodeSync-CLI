@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -93,6 +95,7 @@ class SettingSync:
         self._pending_uploads: dict[str, dict] = {}
         self._upload_directives: set[str] = set()
         self._baseline_committed = False
+        self._last_ack_progress_monotonic = time.monotonic()
 
     @property
     def is_sync_complete(self) -> bool:
@@ -177,6 +180,31 @@ class SettingSync:
         log.info("SettingModify → %s", rel_path)
         await self.engine.ws_client.send(msg)
         self._echo_hashes[rel_path] = hash_
+
+    async def wait_modify_acks(
+        self,
+        ack_timeout: float = 10.0,
+        poll_interval: float = 0.1,
+    ) -> None:
+        """Wait, bounded, for SettingModifyAck of config uploads already sent.
+
+        One-shot commands are about to close the connection and the baseline
+        is recorded on the ack. Servers from 3.2.1 answer an unchanged
+        SettingModify with a SettingModifyAck that carries the path; 3.0.x and
+        3.1.x answer with a bare success that names neither an action nor a
+        path, so for those no ack will ever match. The wait therefore uses a
+        progress timeout and just returns when nothing new arrives — that is
+        normal for older servers, not an error.
+        """
+        while self._pending_uploads:
+            idle_for = time.monotonic() - self._last_ack_progress_monotonic
+            if idle_for >= ack_timeout:
+                log.debug(
+                    "Giving up waiting for %d setting acks after %.0fs without progress",
+                    len(self._pending_uploads), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
 
     async def push_delete(self, rel_path: str) -> None:
         if self._echo_hashes.get(rel_path) == _DELETED:
@@ -294,6 +322,8 @@ class SettingSync:
         pending = self._pending_uploads.pop(rel_path, None)
         if pending is None:
             return
+        # One-shot commands may be waiting for these acks before closing.
+        self._last_ack_progress_monotonic = time.monotonic()
         SyncState.set_baseline(
             self.engine.state.setting_baseline,
             rel_path,

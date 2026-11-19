@@ -108,6 +108,10 @@ class FileSync:
         self._pending_uploads: dict[str, dict] = {}
         self._upload_directives: set[str] = set()
         self._baseline_committed = False
+        # Paths whose chunks have all been sent but whose FileUploadAck has
+        # not arrived yet. The baseline is only written on the ack, and one-
+        # shot commands close the connection once this set drains.
+        self._awaiting_ack: set[str] = set()
 
     @property
     def is_sync_complete(self) -> bool:
@@ -155,6 +159,7 @@ class FileSync:
         self._pending_uploads = {}
         self._upload_directives = set()
         self._baseline_committed = False
+        self._awaiting_ack.clear()
 
     def _mark_sync_activity(self) -> None:
         self._last_sync_activity_monotonic = time.monotonic()
@@ -317,13 +322,21 @@ class FileSync:
         self,
         progress_timeout: float = 60.0,
         poll_interval: float = 0.1,
+        ack_timeout: float = 30.0,
     ) -> None:
-        """Wait until queued and in-flight uploads finish.
+        """Wait until queued, in-flight and unacknowledged uploads finish.
 
-        Uses a progress timeout rather than a total timeout: every chunk sent
-        refreshes the progress timestamp, so a large upload is not cut off as
-        long as it keeps moving. One-shot commands call this before closing
-        the connection so in-flight uploads are not truncated.
+        Uses progress timeouts rather than total timeouts: every chunk sent
+        and every FileUploadAck received refreshes the progress timestamp, so
+        a large upload is not cut off as long as it keeps moving. One-shot
+        commands call this before closing the connection so in-flight uploads
+        are not truncated.
+
+        Sending the last chunk is not the end of an upload: the server still
+        has to write it and answer FileUploadAck, and the baseline is only
+        recorded on that ack. The second loop waits for those acks with its
+        own progress timeout (``ack_timeout``); if none arrives the command
+        continues without them rather than hanging.
         """
         while self._upload_tasks or self._upload_queue_pending():
             idle_for = time.monotonic() - self._last_upload_progress_monotonic
@@ -331,6 +344,15 @@ class FileSync:
                 log.warning(
                     "Giving up waiting for %d uploads after %.0fs without progress",
                     len(self._upload_tasks), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
+        while self._awaiting_ack:
+            idle_for = time.monotonic() - self._last_upload_progress_monotonic
+            if idle_for >= ack_timeout:
+                log.warning(
+                    "Giving up waiting for %d upload acks after %.0fs without progress",
+                    len(self._awaiting_ack), idle_for,
                 )
                 return
             await asyncio.sleep(poll_interval)
@@ -383,6 +405,11 @@ class FileSync:
             chunk = build_binary_chunk(session_id, 0, b"")
             await self.engine.ws_client.send_bytes(chunk)
             self._last_upload_progress_monotonic = time.monotonic()
+        # All chunks are out; the server still has to commit the upload and
+        # answer FileUploadAck. Registered before the worker returns so a
+        # waiter observing an empty queue already sees this path.
+        self._awaiting_ack.add(rel_path)
+        self._last_upload_progress_monotonic = time.monotonic()
         log.info("Upload complete: %s (%d chunks)", rel_path, idx)
 
     async def _on_upload_ack(self, msg: WSMessage) -> None:
@@ -391,6 +418,10 @@ class FileSync:
         if not rel_path:
             return
         log.debug("← FileUploadAck: %s", rel_path)
+        # Confirms the upload finished server-side; one-shot commands may be
+        # waiting for the last of these before closing the connection.
+        self._awaiting_ack.discard(rel_path)
+        self._last_upload_progress_monotonic = time.monotonic()
 
         # The server now holds the content we reported (or already held it).
         # Record the *reported* hash/mtime/size, not the on-disk state: the

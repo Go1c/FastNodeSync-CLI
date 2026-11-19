@@ -105,6 +105,19 @@ class TestOneShotWaitsForUploads(unittest.IsolatedAsyncioTestCase):
         self.chunk_started.set()
         await self.gate.wait()
 
+    async def _ack_when_awaiting(self, name: str, timeout: float = 2.0) -> None:
+        """Ack the upload once its last chunk is out, as the server does."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if name in self.engine.file_sync._awaiting_ack:
+                await self.engine.file_sync._on_upload_ack(
+                    WSMessage("FileUploadAck", {"data": {"path": name}}),
+                )
+                return
+            await asyncio.sleep(0.01)
+        self.fail(f"upload {name} never waited for an ack")
+
     async def test_sync_once_waits_for_upload_before_close(self):
         task = asyncio.create_task(self.engine.sync_once())
         await asyncio.wait_for(self.chunk_started.wait(), timeout=2)
@@ -112,6 +125,8 @@ class TestOneShotWaitsForUploads(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.close_snapshots, [], "socket closed while upload was in flight")
 
         self.gate.set()
+        # The connection must also stay open until the upload is acked.
+        await self._ack_when_awaiting("big.bin")
         await asyncio.wait_for(task, timeout=2)
 
         self.assertTrue(self.engine.ws_client.closed)
@@ -126,6 +141,7 @@ class TestOneShotWaitsForUploads(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.close_snapshots, [], "socket closed while upload was in flight")
 
         self.gate.set()
+        await self._ack_when_awaiting("big.bin")
         await asyncio.wait_for(task, timeout=2)
         self.assertEqual(self.close_snapshots[0], {"upload_tasks": 0, "queue_pending": False})
 

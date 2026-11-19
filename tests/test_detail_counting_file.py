@@ -258,6 +258,17 @@ class TestFileSyncWaitUploadsIdle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chunks_sent, "upload worker did not start sending")
         return gate
 
+    async def _ack_when_awaiting(self, name: str, timeout: float = 2.0) -> None:
+        """Ack the upload once its last chunk is out, as the server does."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if name in self.fs._awaiting_ack:
+                await self.fs._on_upload_ack(_wrap("FileUploadAck", {"path": name}))
+                return
+            await asyncio.sleep(0.01)
+        self.fail(f"upload {name} never waited for an ack")
+
     async def test_waits_for_in_flight_upload(self):
         gate = await self._start_blocked_upload()
         waiter = asyncio.create_task(self.fs.wait_uploads_idle(progress_timeout=5))
@@ -265,6 +276,9 @@ class TestFileSyncWaitUploadsIdle(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(waiter.done(), "must wait while an upload is in flight")
 
         gate.set()
+        # wait_uploads_idle also waits for the ack that follows the last
+        # chunk; deliver it the way the server would.
+        await self._ack_when_awaiting("big.bin")
         await asyncio.wait_for(waiter, timeout=2)
         self.assertEqual(self.fs._upload_tasks, set())
 
@@ -293,8 +307,13 @@ class TestFileSyncWaitUploadsIdle(unittest.IsolatedAsyncioTestCase):
             "path": "multi.bin", "chunkSize": 2,
         }))
         # 4 chunks * 0.05s = 0.2s total, longer than the 0.15s progress
-        # timeout, but no single gap exceeds it.
-        await asyncio.wait_for(self.fs.wait_uploads_idle(progress_timeout=0.15), timeout=2)
+        # timeout, but no single gap exceeds it. The ack keeps the second
+        # (ack) wait from running into its own timeout.
+        waiter = asyncio.create_task(
+            self.fs.wait_uploads_idle(progress_timeout=0.15),
+        )
+        await self._ack_when_awaiting("multi.bin")
+        await asyncio.wait_for(waiter, timeout=2)
         self.assertEqual(len(chunk_times), 4)
         self.assertEqual(self.fs._upload_tasks, set())
 

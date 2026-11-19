@@ -177,8 +177,11 @@ class SyncEngine:
             if authenticated:
                 # One-shot commands close the connection right after the sync
                 # round completes; let in-flight uploads finish first so large
-                # attachments are not truncated mid-chunk.
+                # attachments are not truncated mid-chunk. Wait for the acks
+                # too: the incremental baseline is recorded on them, and the
+                # server needs the connection to finish writing the upload.
                 await self.file_sync.wait_uploads_idle()
+                await self.setting_sync.wait_modify_acks()
             await self.ws_client.close()
             ws_task.cancel()
             try:
@@ -205,6 +208,7 @@ class SyncEngine:
             if authenticated:
                 # See sync_once(): do not cut in-flight uploads short.
                 await self.file_sync.wait_uploads_idle()
+                await self.setting_sync.wait_modify_acks()
             await self.ws_client.close()
             ws_task.cancel()
             try:
