@@ -178,8 +178,8 @@ class WSClient:
 
         if isinstance(msg.data, dict):
             vault = msg.data.get("vault")
-            if vault and vault != self.config.server.vault:
-                log.debug("Ignoring message for vault %s: %s", vault, msg.action)
+            if isinstance(vault, str) and vault and vault != self.config.server.vault:
+                log.debug("Ignoring message for vault %r: %s", vault, msg.action)
                 return
 
         handler = self._handlers.get(msg.action)
