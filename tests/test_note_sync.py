@@ -151,6 +151,27 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.state.last_note_sync_time, 3458)
         self.assertNotIn("NoteModify", [m.action for m in self.engine.ws_client.sent])
 
+    async def test_need_push_outside_vault_is_not_sent_but_counts(self):
+        outside = self.vault.parent / "outside-note.md"
+        outside.write_text("secret", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 3459,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+
+        with self.assertLogs("fns_cli.note_sync", level="WARNING"):
+            await self.ns._on_sync_need_push(_wrap("NoteSyncNeedPush", {
+                "path": "../outside-note.md",
+            }))
+
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 3459)
+        self.assertNotIn("NoteModify", [m.action for m in self.engine.ws_client.sent])
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / "note.md"
         target.write_text("same", encoding="utf-8")

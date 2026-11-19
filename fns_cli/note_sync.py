@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import content_hash, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_NOTE_DELETE,
     ACTION_NOTE_MODIFY,
@@ -286,6 +287,9 @@ class NoteSync:
         rel_path: str = data.get("path", "")
         try:
             if not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring NeedPush for unsafe path: %s", rel_path)
                 return
             log.info("← NoteSyncNeedPush: %s", rel_path)
             # NeedPush is an explicit server request to re-send the local content;

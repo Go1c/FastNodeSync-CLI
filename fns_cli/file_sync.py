@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_FILE_CHUNK_DOWNLOAD,
     ACTION_FILE_DELETE,
@@ -207,6 +208,9 @@ class FileSync:
 
         try:
             if not session_id or not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring upload request for unsafe path: %s", rel_path)
                 return
 
             full = self.vault_path / rel_path

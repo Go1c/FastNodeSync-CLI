@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_SETTING_DELETE,
     ACTION_SETTING_MODIFY,
@@ -276,6 +277,9 @@ class SettingSync:
             paths = [p for p in paths if p]
             try:
                 for rel_path in paths:
+                    if not is_safe_rel_path(rel_path):
+                        log.warning("Ignoring unsafe setting upload path: %s", rel_path)
+                        continue
                     await self.push_modify(rel_path, force=True)
             finally:
                 self._received_upload += max(len(paths), 1)
@@ -285,6 +289,9 @@ class SettingSync:
         rel_path = data.get("path", "")
         try:
             if not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring unsafe setting upload path: %s", rel_path)
                 return
             log.info("← SettingSyncNeedUpload: %s", rel_path)
             # An explicit upload request from the server must bypass echo

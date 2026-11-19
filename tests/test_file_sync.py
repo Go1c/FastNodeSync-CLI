@@ -443,6 +443,29 @@ class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await asyncio.wait_for(asyncio.gather(*self.fs._upload_tasks), timeout=1)
 
+    async def test_upload_outside_vault_is_not_sent_but_counts(self):
+        outside = self.vault.parent / "outside-asset.bin"
+        outside.write_bytes(b"secret")
+        self.addCleanup(outside.unlink)
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5682,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 1,
+            "needSyncMtimeCount": 0,
+        }))
+
+        with self.assertLogs("fns_cli.file_sync", level="WARNING"):
+            await self.fs._on_upload_session(_wrap("FileUpload", {
+                "sessionId": "12345678-1234-1234-1234-123456789012",
+                "path": "../outside-asset.bin", "chunkSize": 7,
+            }))
+
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 5682)
+        self.assertEqual(self.engine.ws_client.send_bytes.await_count, 0)
+        self.assertEqual(self.fs._upload_tasks, set())
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / "note.bin"
         target.write_bytes(b"same")

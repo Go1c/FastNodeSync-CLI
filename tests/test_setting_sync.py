@@ -206,6 +206,59 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.engine.ws_client.sent), sent_before + 1)
         self.assertEqual(self.engine.ws_client.sent[-1].action, "SettingModify")
 
+    async def test_upload_outside_vault_is_not_sent_but_counts(self):
+        outside = self.vault.parent / "outside-setting.json"
+        outside.write_text("secret", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8904,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 1,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+
+        with self.assertLogs("fns_cli.setting_sync", level="WARNING"):
+            await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+                "data": {"path": "../outside-setting.json"},
+            }))
+
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 8904)
+        self.assertNotIn("SettingModify", [m.action for m in self.engine.ws_client.sent])
+
+    async def test_legacy_upload_list_skips_unsafe_paths(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("local", encoding="utf-8")
+        outside = self.vault.parent / "outside-setting.json"
+        outside.write_text("secret", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8905,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 2,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+
+        with self.assertLogs("fns_cli.setting_sync", level="WARNING"):
+            await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+                "data": {"needUpload": [
+                    {"path": "../outside-setting.json"},
+                    {"path": ".obsidian/app.json"},
+                ]},
+            }))
+
+        self.assertTrue(self.sync.is_sync_complete)
+        actions = [m.action for m in self.engine.ws_client.sent]
+        self.assertEqual(actions.count("SettingModify"), 1)
+        self.assertEqual(self.engine.ws_client.sent[-1].data["path"], ".obsidian/app.json")
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / ".obsidian" / "app.json"
         target.parent.mkdir()
