@@ -297,9 +297,11 @@ class NoteSync:
             await self.push_modify(rel_path, force=True)
         finally:
             # Count on arrival (see _on_sync_mtime): a detail the server sent
-            # must advance this round even if we cannot act on it.
-            self._received_upload += 1
-            self._check_all_received()
+            # must advance this round even if we cannot act on it. Once the
+            # round is complete there is nothing left to count.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

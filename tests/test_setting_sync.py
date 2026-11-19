@@ -261,6 +261,31 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actions.count("SettingModify"), 1)
         self.assertEqual(self.engine.ws_client.sent[-1].data["path"], ".obsidian/app.json")
 
+    async def test_upload_outside_round_does_not_repeat_complete(self):
+        target = self.vault / ".obsidian" / "later.json"
+        target.parent.mkdir()
+        target.write_text("edit", encoding="utf-8")
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 8906,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 0,
+                "needSyncMtimeCount": 0,
+            },
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        received_before = self.sync._received_upload
+
+        with self.assertLogs("fns_cli.setting_sync", level="INFO") as logs:
+            await self.sync._on_sync_need_upload(WSMessage("SettingSyncNeedUpload", {
+                "data": {"path": ".obsidian/later.json"},
+            }))
+        self.assertFalse(any("SettingSync complete" in line for line in logs.output), logs.output)
+
+        self.assertEqual(self.sync._received_upload, received_before)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 8906)
+
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / ".obsidian" / "app.json"
         target.parent.mkdir()

@@ -8,6 +8,7 @@ Run with:  python -m pytest tests/test_file_sync.py -v
 from __future__ import annotations
 
 import asyncio
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -471,6 +472,43 @@ class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.state.last_file_sync_time, 5682)
         self.assertEqual(self.engine.ws_client.send_bytes.await_count, 0)
         self.assertEqual(self.fs._upload_tasks, set())
+
+    async def test_upload_outside_round_does_not_repeat_complete(self):
+        # Watcher-driven FileUploadCheck replies (FileUpload) arrive after the
+        # sync round is over; they must not count or repeat "sync complete".
+        target = self.vault / "later.bin"
+        target.write_bytes(b"x")
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 5683,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 0,
+            "needSyncMtimeCount": 0,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        received_before = self.fs._received_upload
+
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Capture()
+        logger = logging.getLogger("fns_cli.file_sync")
+        logger.addHandler(handler)
+        try:
+            await self.fs._on_upload_session(_wrap("FileUpload", {
+                "sessionId": "12345678-1234-1234-1234-123456789012",
+                "path": "later.bin", "chunkSize": 7,
+            }))
+        finally:
+            logger.removeHandler(handler)
+        self.assertFalse(any("FileSync complete" in m for m in records), records)
+
+        self.assertEqual(self.fs._received_upload, received_before)
+        self.assertEqual(self.engine.state.last_file_sync_time, 5683)
+        await asyncio.wait_for(asyncio.gather(*self.fs._upload_tasks), timeout=1)
 
     async def test_zero_mtime_detail_still_completes_round(self):
         target = self.vault / "note.bin"

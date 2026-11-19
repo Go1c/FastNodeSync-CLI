@@ -240,8 +240,13 @@ class FileSync:
         finally:
             # Count on arrival (see _on_sync_mtime), after the upload task is
             # registered so a caller that observes completion can wait for it.
-            self._received_upload += 1
-            self._check_complete()
+            # FileUpload also arrives outside a sync round (the watcher's
+            # FileUploadCheck gets the same reply); once the round is complete
+            # there is nothing left to count, and counting would only repeat
+            # the "sync complete" log.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_complete()
 
     def _ensure_upload_queue(self) -> asyncio.Queue:
         if self._upload_queue is None:
