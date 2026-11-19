@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
 from .pathguard import is_safe_rel_path
+from .state import SyncState, baseline_matches, commit_round_baseline
 from .protocol import (
     ACTION_SETTING_DELETE,
     ACTION_SETTING_MODIFY,
+    ACTION_SETTING_MODIFY_ACK,
     ACTION_SETTING_SYNC,
     ACTION_SETTING_SYNC_DELETE,
     ACTION_SETTING_SYNC_END,
@@ -85,6 +87,12 @@ class SettingSync:
         self._sync_context = ""
         self._sync_vault = ""
         self._echo_hashes: dict[str, str] = {}
+        # Same role as the identically named FileSync attributes: see the
+        # comments in FileSync.__init__ and FileSync._commit_baseline.
+        self._reported: dict[str, dict] = {}
+        self._pending_uploads: dict[str, dict] = {}
+        self._upload_directives: set[str] = set()
+        self._baseline_committed = False
 
     @property
     def is_sync_complete(self) -> bool:
@@ -97,6 +105,7 @@ class SettingSync:
         ws.on(ACTION_SETTING_SYNC_RENAME, self._on_sync_rename)
         ws.on(ACTION_SETTING_SYNC_MTIME, self._on_sync_mtime)
         ws.on(ACTION_SETTING_SYNC_NEED_UPLOAD, self._on_sync_need_upload)
+        ws.on(ACTION_SETTING_MODIFY_ACK, self._on_modify_ack)
         ws.on(ACTION_SETTING_SYNC_PAGE, self._on_sync_page)
         ws.on(ACTION_SETTING_SYNC_END, self._on_sync_end)
 
@@ -106,6 +115,7 @@ class SettingSync:
         last_time = self.engine.state.last_setting_sync_time
         ctx = str(uuid.uuid4())
         settings = self._collect_local_settings()
+        self._reported = {entry["path"]: entry for entry in settings}
         msg = WSMessage(ACTION_SETTING_SYNC, {
             "context": ctx,
             "vault": self.config.server.vault,
@@ -118,7 +128,8 @@ class SettingSync:
     async def request_full_sync(self) -> None:
         """Full sync: send all local settings for comparison."""
         self._reset_counters()
-        settings = self._collect_local_settings()
+        settings = self._collect_local_settings(full=True)
+        self._reported = {entry["path"]: entry for entry in settings}
         ctx = str(uuid.uuid4())
         msg = WSMessage(ACTION_SETTING_SYNC, {
             "context": ctx,
@@ -149,6 +160,11 @@ class SettingSync:
             return
 
         stat = full.stat()
+        self._pending_uploads[rel_path] = {
+            "hash": hash_,
+            "mtime": int(stat.st_mtime * 1000),
+            "size": stat.st_size,
+        }
         msg = WSMessage(ACTION_SETTING_MODIFY, {
             "vault": self.config.server.vault,
             "path": rel_path,
@@ -197,6 +213,7 @@ class SettingSync:
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
             self._echo_hashes[rel_path] = file_content_hash_binary(full)
+            self._record_baseline(rel_path)
             log.info("← SettingSyncModify: %s", rel_path)
         except Exception:
             log.exception("Failed to write setting %s", rel_path)
@@ -217,6 +234,7 @@ class SettingSync:
                 log.info("← SettingSyncDelete: %s", rel_path)
                 self._try_remove_empty_parent(full)
             self._echo_hashes[rel_path] = _DELETED
+            SyncState.drop_baseline(self.engine.state.setting_baseline, rel_path)
         except Exception:
             log.exception("Failed to delete setting %s", rel_path)
 
@@ -239,6 +257,8 @@ class SettingSync:
                 old_full.rename(new_full)
                 if new_full.exists():
                     self._echo_hashes[new_path] = file_content_hash_binary(new_full)
+                    self._record_baseline(new_path)
+                SyncState.drop_baseline(self.engine.state.setting_baseline, old_path)
                 log.info("← SettingSyncRename: %s → %s", old_path, new_path)
                 self._try_remove_empty_parent(old_full)
         except Exception:
@@ -260,8 +280,28 @@ class SettingSync:
             try:
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
+                self._record_baseline(rel_path)
             except OSError:
                 pass
+
+    async def _on_modify_ack(self, msg: WSMessage) -> None:
+        """SettingModifyAck: the server accepted (or already held) our content."""
+        data = _extract_inner(msg.data)
+        rel_path = data.get("path", "")
+        if not rel_path:
+            return
+        log.debug("← SettingModifyAck: %s", rel_path)
+        pending = self._pending_uploads.pop(rel_path, None)
+        if pending is None:
+            return
+        SyncState.set_baseline(
+            self.engine.state.setting_baseline,
+            rel_path,
+            pending["hash"],
+            pending["mtime"],
+            pending["size"],
+        )
+        self.engine.state.save()
 
     async def _on_sync_need_upload(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -280,6 +320,9 @@ class SettingSync:
                     if not is_safe_rel_path(rel_path):
                         log.warning("Ignoring unsafe setting upload path: %s", rel_path)
                         continue
+                    # The server named this path in an upload directive: it does
+                    # not consider the reported content to be in sync.
+                    self._upload_directives.add(rel_path)
                     await self.push_modify(rel_path, force=True)
             finally:
                 if not self._sync_complete:
@@ -295,6 +338,9 @@ class SettingSync:
                 log.warning("Ignoring unsafe setting upload path: %s", rel_path)
                 return
             log.info("← SettingSyncNeedUpload: %s", rel_path)
+            # The server named this path in an upload directive: it does not
+            # consider the reported content to be in sync.
+            self._upload_directives.add(rel_path)
             # An explicit upload request from the server must bypass echo
             # suppression, same as NoteSync's NeedPush handler.
             await self.push_modify(rel_path, force=True)
@@ -378,6 +424,10 @@ class SettingSync:
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
+        self._reported = {}
+        self._pending_uploads = {}
+        self._upload_directives = set()
+        self._baseline_committed = False
 
     def _check_all_received(self) -> None:
         if not self._got_end:
@@ -396,11 +446,51 @@ class SettingSync:
             self._commit_last_time()
 
     def _commit_last_time(self) -> None:
-        if self._pending_last_time:
-            log.info("Committing setting lastTime=%d", self._pending_last_time)
-            self.engine.state.last_setting_sync_time = self._pending_last_time
-            self.engine.state.save()
-            self._pending_last_time = 0
+        if not self._pending_last_time:
+            return
+        log.info("Committing setting lastTime=%d", self._pending_last_time)
+        self.engine.state.last_setting_sync_time = self._pending_last_time
+        self._commit_baseline()
+        self.engine.state.save()
+        self._pending_last_time = 0
+
+    def _record_baseline(self, rel_path: str) -> None:
+        """Record the on-disk state after the server confirmed this path."""
+        full = self.vault_path / rel_path
+        try:
+            stat = full.stat()
+        except OSError:
+            log.debug("Cannot record baseline for %s", rel_path)
+            return
+        # A download or mtime sync answers the upload check as well; the
+        # pending entry is superseded by what is on disk now.
+        self._pending_uploads.pop(rel_path, None)
+        SyncState.set_baseline(
+            self.engine.state.setting_baseline,
+            rel_path,
+            file_content_hash_binary(full),
+            int(stat.st_mtime * 1000),
+            stat.st_size,
+        )
+
+    def _commit_baseline(self) -> None:
+        """Fold this round's report into the persisted baseline."""
+        if self._baseline_committed:
+            return
+        self._baseline_committed = True
+        committed = commit_round_baseline(
+            self.vault_path,
+            self.engine.state.setting_baseline,
+            self._reported,
+            self._pending_uploads,
+            self._upload_directives,
+            self._expected_upload,
+        )
+        log.info(
+            "Setting baseline committed: %d reported paths, %d total",
+            committed,
+            len(self.engine.state.setting_baseline),
+        )
 
     def _try_remove_empty_parent(self, file_path: Path) -> None:
         parent = file_path.parent
@@ -414,8 +504,20 @@ class SettingSync:
                 break
             parent = parent.parent
 
-    def _collect_local_settings(self) -> list[dict]:
-        """Collect all config files under dot-prefixed directories."""
+    def _collect_local_settings(self, full: bool = False) -> list[dict]:
+        """Collect config files under dot-prefixed directories.
+
+        In incremental mode (a previous sync completed and a baseline exists)
+        only files that differ from the baseline are reported; see
+        FileSync._collect_local_files for why. ``request_full_sync`` reports
+        everything (``lastTime=0``), which also serves as the recovery path.
+        """
+        state = self.engine.state
+        incremental = (
+            not full
+            and state.last_setting_sync_time > 0
+            and bool(state.setting_baseline)
+        )
         settings = []
         for fp in self.vault_path.rglob("*"):
             if fp.is_dir():
@@ -434,12 +536,17 @@ class SettingSync:
             except Exception:
                 continue
             stat = fp.stat()
-            settings.append({
+            entry = {
                 "path": rel,
                 "pathHash": path_hash(rel),
                 "contentHash": hash_,
                 "mtime": int(stat.st_mtime * 1000),
                 "ctime": int(stat.st_ctime * 1000),
                 "size": stat.st_size,
-            })
+            }
+            if incremental and baseline_matches(
+                state.setting_baseline.get(rel), entry["contentHash"], entry["size"]
+            ):
+                continue
+            settings.append(entry)
         return settings
