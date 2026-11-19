@@ -387,6 +387,26 @@ class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_file_sync_time, 6789)
 
+    async def test_zero_mtime_detail_still_completes_round(self):
+        target = self.vault / "note.bin"
+        target.write_bytes(b"same")
+        before = target.stat().st_mtime
+        await self.fs._on_sync_end(_wrap(ACTION_FILE_SYNC_END, {
+            "lastTime": 6790,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 0,
+            "needSyncMtimeCount": 1,
+        }))
+        self.assertFalse(self.fs.is_sync_complete)
+
+        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
+            "path": "note.bin", "mtime": 0,
+        }))
+        self.assertTrue(self.fs.is_sync_complete)
+        self.assertEqual(self.engine.state.last_file_sync_time, 6790)
+        self.assertEqual(target.stat().st_mtime, before)
+
 
 class TestFileSyncLoopBinding(unittest.TestCase):
 

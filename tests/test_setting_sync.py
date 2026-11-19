@@ -142,6 +142,29 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_setting_sync_time, 9012)
 
+    async def test_zero_mtime_detail_still_completes_round(self):
+        target = self.vault / ".obsidian" / "app.json"
+        target.parent.mkdir()
+        target.write_text("same", encoding="utf-8")
+        before = target.stat().st_mtime
+        await self.sync._on_sync_end(WSMessage("SettingSyncEnd", {
+            "data": {
+                "lastTime": 9013,
+                "needModifyCount": 0,
+                "needDeleteCount": 0,
+                "needUploadCount": 0,
+                "needSyncMtimeCount": 1,
+            },
+        }))
+        self.assertFalse(self.sync.is_sync_complete)
+
+        await self.sync._on_sync_mtime(WSMessage("SettingSyncMtime", {
+            "data": {"path": ".obsidian/app.json", "mtime": 0},
+        }))
+        self.assertTrue(self.sync.is_sync_complete)
+        self.assertEqual(self.engine.state.last_setting_sync_time, 9013)
+        self.assertEqual(target.stat().st_mtime, before)
+
     async def test_setting_sync_pagination_flow(self):
         self.sync.register_handlers()
 

@@ -390,6 +390,11 @@ class FileSync:
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         self._mark_sync_activity()
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_complete()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -401,8 +406,6 @@ class FileSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
-        self._received_mtime += 1
-        self._check_complete()
 
     async def _on_chunk_download_start(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

@@ -245,6 +245,11 @@ class SettingSync:
 
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_all_received()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -256,8 +261,6 @@ class SettingSync:
                 os.utime(full, (ts, ts))
             except OSError:
                 pass
-        self._received_mtime += 1
-        self._check_all_received()
 
     async def _on_sync_need_upload(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)

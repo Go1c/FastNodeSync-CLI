@@ -124,6 +124,26 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(target.stat().st_mtime * 1000), 1000000)
         self.assertEqual(self.engine.state.last_note_sync_time, 4567)
 
+    async def test_zero_mtime_detail_still_completes_round(self):
+        target = self.vault / "note.md"
+        target.write_text("same", encoding="utf-8")
+        before = target.stat().st_mtime
+        await self.ns._on_sync_end(_wrap(ACTION_NOTE_SYNC_END, {
+            "lastTime": 4568,
+            "needModifyCount": 0,
+            "needDeleteCount": 0,
+            "needUploadCount": 0,
+            "needSyncMtimeCount": 1,
+        }))
+        self.assertFalse(self.ns.is_sync_complete)
+
+        await self.ns._on_sync_mtime(_wrap("NoteSyncMtime", {
+            "path": "note.md", "mtime": 0,
+        }))
+        self.assertTrue(self.ns.is_sync_complete)
+        self.assertEqual(self.engine.state.last_note_sync_time, 4568)
+        self.assertEqual(target.stat().st_mtime, before)
+
     async def test_note_sync_pagination_flow(self):
         self.ns.register_handlers()
 
