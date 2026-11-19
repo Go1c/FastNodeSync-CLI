@@ -13,7 +13,7 @@ from .file_sync import FileSync
 from .folder_sync import FolderSync
 from .note_sync import NoteSync
 from .setting_sync import SettingSync
-from .state import SyncState
+from .state import SyncState, compute_baseline_scope
 
 log = logging.getLogger("fns_cli.sync_engine")
 
@@ -24,12 +24,39 @@ class SyncEngine:
         self.vault_path = config.vault_path
         self.ws_client = WSClient(config)
         self.state = SyncState.load(self.vault_path)
+        self._ensure_baseline_scope()
         self.note_sync = NoteSync(self)
         self.file_sync = FileSync(self)
         self.folder_sync = FolderSync(self)
         self.setting_sync = SettingSync(self)
         self._ignored_files: set[str] = set()
         self._watch_enabled = False
+
+    def _ensure_baseline_scope(self) -> None:
+        """Clear a baseline confirmed against a different server or vault.
+
+        A baseline entry means "this server's vault already has this content".
+        If `server.api` or `server.vault` changed while the local tree and
+        `.fns_state.json` stayed, trusting the old entries would make the
+        client skip every upload to the new target. The sync cursors are left
+        alone, matching the existing behavior when the target changes; only
+        the baselines are dropped.
+        """
+        scope = compute_baseline_scope(
+            self.config.server.api, self.config.server.vault,
+        )
+        if self.state.baseline_scope == scope:
+            return
+        had_baseline = bool(self.state.file_baseline or self.state.setting_baseline)
+        self.state.file_baseline = {}
+        self.state.setting_baseline = {}
+        self.state.baseline_scope = scope
+        if had_baseline:
+            log.info(
+                "Server address or vault changed; cleared the incremental baseline",
+            )
+        if self.vault_path.exists():
+            self.state.save()
 
     def ignore_file(self, rel_path: str) -> None:
         self._ignored_files.add(rel_path)

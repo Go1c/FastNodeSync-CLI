@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -10,6 +11,19 @@ from typing import Dict, List
 from .hash_utils import file_content_hash_binary
 
 DEFAULT_STATE_FILE = ".fns_state.json"
+
+
+def compute_baseline_scope(api: str, vault: str) -> str:
+    """Identify the server/vault a baseline belongs to.
+
+    Only a short hash is stored, not the address: the state file travels with
+    the vault and has no reason to carry the server URL. Trailing slashes and
+    surrounding whitespace are ignored so cosmetic edits to the config do not
+    invalidate the baseline.
+    """
+    normalized_api = (api or "").strip().rstrip("/")
+    material = f"{normalized_api}\n{vault or ''}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 def _load_baseline(raw: object) -> Dict[str, dict]:
@@ -122,6 +136,12 @@ class SyncState:
     # round fills the table in.
     file_baseline: Dict[str, dict] = field(default_factory=dict)
     setting_baseline: Dict[str, dict] = field(default_factory=dict)
+    # What the baseline describes: a hash of the server address and vault name
+    # the entries were confirmed against. The server address itself is not
+    # stored. A baseline that no longer matches the configured server/vault is
+    # meaningless — the new target may have nothing — so it is cleared when
+    # the client starts (see SyncEngine).
+    baseline_scope: str = ""
 
     _path: str = field(default="", repr=False)
 
@@ -163,6 +183,8 @@ class SyncState:
                 state.synced_note_paths = raw.get("synced_note_paths", [])
                 state.file_baseline = _load_baseline(raw.get("file_baseline"))
                 state.setting_baseline = _load_baseline(raw.get("setting_baseline"))
+                scope = raw.get("baseline_scope", "")
+                state.baseline_scope = scope if isinstance(scope, str) else ""
             except (json.JSONDecodeError, OSError):
                 pass
         return state
