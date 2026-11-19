@@ -115,6 +115,8 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
             "needUploadCount": 0,
             "needSyncMtimeCount": 1,
         }))
+        self.assertEqual(self.engine.ws_client.sent[0].action, "NoteSyncPageAck")
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
         self.assertFalse(self.ns.is_sync_complete)
 
         await self.ns._on_sync_mtime(_wrap("NoteSyncMtime", {

@@ -133,6 +133,8 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
                 "needSyncMtimeCount": 1,
             },
         }))
+        self.assertEqual(self.engine.ws_client.sent[0].action, "SettingSyncPageAck")
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
         self.assertFalse(self.sync.is_sync_complete)
 
         await self.sync._on_sync_mtime(WSMessage("SettingSyncMtime", {

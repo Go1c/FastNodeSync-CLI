@@ -382,6 +382,8 @@ class TestFileSyncAllEndCounts(unittest.IsolatedAsyncioTestCase):
             "needUploadCount": 0,
             "needSyncMtimeCount": 1,
         }))
+        self.assertEqual(self.engine.ws_client.sent[0].action, ACTION_FILE_SYNC_PAGE_ACK)
+        self.assertEqual(self.engine.ws_client.sent[0].data["pageIndex"], -1)
         self.assertFalse(self.fs.is_sync_complete)
 
         await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
