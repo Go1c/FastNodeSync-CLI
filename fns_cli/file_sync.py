@@ -422,7 +422,18 @@ class FileSync:
 
         if content is None:
             # Attachment files: server sends metadata only, we must request
-            # a chunked download via FileChunkDownload.
+            # a chunked download via FileChunkDownload — unless the local copy
+            # already is the content the server is describing. Incremental
+            # reporting leaves our own previous uploads out of the request, so
+            # the server answers them with FileSyncUpdate; downloading them
+            # again would undo the point of reporting less.
+            if self._local_matches_attachment(rel_path, data):
+                log.debug(
+                    "← FileSyncUpdate: %s already matches the local content", rel_path,
+                )
+                self._received_modify += 1
+                self._check_complete()
+                return
             self._pending_download_paths.add(rel_path)
             log.info("← FileSyncUpdate (requesting chunk download): %s", rel_path)
             await self._request_chunk_download(rel_path, data)
@@ -452,6 +463,64 @@ class FileSync:
 
         self._received_modify += 1
         self._check_complete()
+
+    def _local_matches_attachment(self, rel_path: str, data: dict) -> bool:
+        """Whether the attachment described by FileSyncUpdate is already on disk.
+
+        The server sends contentHash and size for attachments (3.0.0 and
+        later), so the local file can be compared before asking for a chunked
+        download. Anything unexpected — a missing or mistyped field, no local
+        file, a directory, a stat failure — returns False, and the normal
+        download path runs unchanged.
+        """
+        content_hash = data.get("contentHash")
+        size = data.get("size")
+        if (
+            not isinstance(content_hash, str)
+            or not content_hash
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+        ):
+            return False
+
+        full = self.vault_path / rel_path
+        try:
+            stat = full.stat()
+        except OSError:
+            return False
+        if not full.is_file() or stat.st_size != size:
+            return False
+
+        mtime = int(stat.st_mtime * 1000)
+        base = self.engine.state.file_baseline.get(rel_path)
+        if (
+            base is not None
+            and base.get("hash") == content_hash
+            and base.get("size") == size
+            and base.get("mtime") == mtime
+        ):
+            # Fast path: the baseline pins this exact content and the file has
+            # not been touched since, so the bytes need not be hashed again.
+            local_hash = content_hash
+        else:
+            local_hash = file_content_hash_binary(full)
+        if local_hash != content_hash:
+            return False
+
+        # Confirmed identical: the server's content is what is on disk, so
+        # this path is in the baseline whether it came from the fast path or
+        # from hashing. Do not re-hash via _record_baseline here; the fast
+        # path exists precisely to avoid reading the file.
+        self._pending_uploads.pop(rel_path, None)
+        SyncState.set_baseline(
+            self.engine.state.file_baseline,
+            rel_path,
+            content_hash,
+            mtime,
+            size,
+        )
+        self._echo_hashes[rel_path] = content_hash
+        return True
 
     async def _request_chunk_download(self, rel_path: str, data: dict) -> None:
         """Send FileChunkDownload request for a file that needs chunked transfer."""
