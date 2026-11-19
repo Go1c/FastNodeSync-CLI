@@ -155,10 +155,12 @@ class SyncEngine:
 
         ws_task = asyncio.create_task(self.ws_client.run())
 
+        authenticated = False
         try:
             if not await self.ws_client.wait_ready(timeout=30):
                 log.error("Failed to authenticate within 30s")
                 return
+            authenticated = True
 
             if self.config.sync.sync_notes:
                 await self.note_sync.request_full_sync()
@@ -172,6 +174,11 @@ class SyncEngine:
                 await self.setting_sync.request_full_sync()
                 await self._wait_setting_sync(timeout=120)
         finally:
+            if authenticated:
+                # One-shot commands close the connection right after the sync
+                # round completes; let in-flight uploads finish first so large
+                # attachments are not truncated mid-chunk.
+                await self.file_sync.wait_uploads_idle()
             await self.ws_client.close()
             ws_task.cancel()
             try:
@@ -186,13 +193,18 @@ class SyncEngine:
 
         ws_task = asyncio.create_task(self.ws_client.run())
 
+        authenticated = False
         try:
             if not await self.ws_client.wait_ready(timeout=30):
                 log.error("Failed to authenticate within 30s")
                 return
+            authenticated = True
 
             await self._initial_sync()
         finally:
+            if authenticated:
+                # See sync_once(): do not cut in-flight uploads short.
+                await self.file_sync.wait_uploads_idle()
             await self.ws_client.close()
             ws_task.cancel()
             try:
@@ -261,8 +273,8 @@ class SyncEngine:
                 log.warning(
                     "FileSync stalled after FileSyncEnd "
                     "(expected=%d, received=%d); continuing with watcher enabled",
-                    self.file_sync._expected_modify + self.file_sync._expected_delete,
-                    self.file_sync._received_modify + self.file_sync._received_delete,
+                    self.file_sync.expected_detail_count,
+                    self.file_sync.received_detail_count,
                 )
                 break
             if loop.time() > deadline:

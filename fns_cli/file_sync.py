@@ -92,6 +92,7 @@ class FileSync:
         self._upload_worker_count = upload_concurrency
         self._upload_workers: set[asyncio.Task] = set()
         self._upload_queue: asyncio.Queue | None = None
+        self._last_upload_progress_monotonic = time.monotonic()
         # See NoteSync._echo_hashes — same semantics here. Updated on both
         # inbound (server write / chunk finalize / rename / delete) and
         # outbound (push_upload / push_delete) so the cache tracks the most
@@ -101,6 +102,14 @@ class FileSync:
     @property
     def is_sync_complete(self) -> bool:
         return self._sync_complete
+
+    @property
+    def expected_detail_count(self) -> int:
+        return self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+
+    @property
+    def received_detail_count(self) -> int:
+        return self._received_upload + self._received_modify + self._received_mtime + self._received_delete
 
     def register_handlers(self) -> None:
         ws = self.engine.ws_client
@@ -202,6 +211,7 @@ class FileSync:
 
     async def _on_upload_session(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         session_id: str = data.get("sessionId", "")
         chunk_size: int = data.get("chunkSize", self.config.sync.file_chunk_size)
         rel_path: str = data.get("path", "")
@@ -223,6 +233,7 @@ class FileSync:
             await self._ensure_upload_queue().put(
                 (session_id, chunk_size, rel_path, full, completion)
             )
+            self._last_upload_progress_monotonic = time.monotonic()
             task = asyncio.create_task(self._await_upload_completion(completion))
             self._upload_tasks.add(task)
             task.add_done_callback(self._upload_tasks.discard)
@@ -246,6 +257,31 @@ class FileSync:
 
     async def _await_upload_completion(self, completion: asyncio.Future) -> None:
         await completion
+
+    async def wait_uploads_idle(
+        self,
+        progress_timeout: float = 60.0,
+        poll_interval: float = 0.1,
+    ) -> None:
+        """Wait until queued and in-flight uploads finish.
+
+        Uses a progress timeout rather than a total timeout: every chunk sent
+        refreshes the progress timestamp, so a large upload is not cut off as
+        long as it keeps moving. One-shot commands call this before closing
+        the connection so in-flight uploads are not truncated.
+        """
+        while self._upload_tasks or self._upload_queue_pending():
+            idle_for = time.monotonic() - self._last_upload_progress_monotonic
+            if idle_for >= progress_timeout:
+                log.warning(
+                    "Giving up waiting for %d uploads after %.0fs without progress",
+                    len(self._upload_tasks), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
+
+    def _upload_queue_pending(self) -> bool:
+        return self._upload_queue is not None and not self._upload_queue.empty()
 
     async def _upload_queue_worker(self) -> None:
         while True:
@@ -284,12 +320,14 @@ class FileSync:
             end = min(offset + chunk_size, total)
             chunk = build_binary_chunk(session_id, idx, file_data[offset:end])
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
             offset = end
             idx += 1
             await asyncio.sleep(0)
         if total == 0:
             chunk = build_binary_chunk(session_id, 0, b"")
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
         log.info("Upload complete: %s (%d chunks)", rel_path, idx)
 
     async def _on_upload_ack(self, msg: WSMessage) -> None:
@@ -500,6 +538,7 @@ class FileSync:
 
     async def _on_sync_page(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         if isinstance(msg.data, dict):
             page_index = data.get("pageIndex") if data.get("pageIndex") is not None else msg.data.get("pageIndex", 0)
             is_last = data.get("isLast") if data.get("isLast") is not None else msg.data.get("isLast", False)
