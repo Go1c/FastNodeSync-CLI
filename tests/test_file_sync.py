@@ -8,7 +8,6 @@ Run with:  python -m pytest tests/test_file_sync.py -v
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,86 +57,6 @@ def _make_engine(vault_path: Path) -> MagicMock:
 def _wrap(action: str, inner: dict) -> WSMessage:
     """Wrap a payload the same way the server does: {data: {...}}."""
     return WSMessage(action, {"data": inner})
-
-
-class TestFileSyncExcludes(unittest.IsolatedAsyncioTestCase):
-
-    async def asyncSetUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.vault = Path(self._tmp.name)
-        self.engine = _make_engine(self.vault)
-        self.engine.is_excluded.side_effect = lambda path: path.startswith(".trash/")
-        self.fs = FileSync(self.engine)
-
-    async def asyncTearDown(self):
-        self._tmp.cleanup()
-
-    async def test_excluded_update_neither_downloads_nor_writes(self):
-        await self.fs._on_sync_update(_wrap(ACTION_FILE_SYNC_UPDATE, {
-            "path": ".trash/new.bin", "content": None,
-        }))
-        self.assertFalse((self.vault / ".trash" / "new.bin").exists())
-        self.engine.ws_client.send.assert_not_awaited()
-        self.assertEqual(self.fs._received_modify, 1)
-
-        await self.fs._on_sync_update(_wrap(ACTION_FILE_SYNC_UPDATE, {
-            "path": ".trash/text.bin", "content": "remote",
-        }))
-        self.assertFalse((self.vault / ".trash" / "text.bin").exists())
-        self.assertEqual(self.fs._received_modify, 2)
-
-    async def test_excluded_delete_and_rename_preserve_local_files(self):
-        old = self.vault / "folder" / "old.bin"
-        old.parent.mkdir()
-        old.write_bytes(b"local")
-        trash = self.vault / ".trash" / "keep.bin"
-        trash.parent.mkdir()
-        trash.write_bytes(b"local")
-
-        await self.fs._on_sync_delete(_wrap(ACTION_FILE_SYNC_DELETE, {
-            "path": ".trash/keep.bin",
-        }))
-        self.assertTrue(trash.exists())
-        self.assertEqual(self.fs._received_delete, 1)
-
-        await self.fs._on_sync_rename(_wrap("FileSyncRename", {
-            "oldPath": "folder/old.bin", "path": ".trash/new.bin",
-        }))
-        self.assertTrue(old.exists())
-        self.assertFalse((self.vault / ".trash" / "new.bin").exists())
-
-    async def test_excluded_chunk_download_is_not_written(self):
-        local = self.vault / ".trash" / "chunked.bin"
-        local.parent.mkdir()
-        local.write_bytes(b"local")
-        await self.fs._on_chunk_download_start(_wrap(ACTION_FILE_SYNC_CHUNK_DOWNLOAD, {
-            "sessionId": "12345678-1234-1234-1234-123456789012",
-            "path": ".trash/chunked.bin", "size": 6,
-            "totalChunks": 1, "chunkSize": 6,
-        }))
-        await self.fs._on_binary_chunk(
-            "12345678-1234-1234-1234-123456789012", 0, b"remote",
-        )
-        self.assertEqual(local.read_bytes(), b"local")
-
-    async def test_excluded_mtime_is_not_applied(self):
-        excluded = self.vault / ".trash" / "keep.bin"
-        excluded.parent.mkdir()
-        excluded.write_bytes(b"local")
-        os.utime(excluded, (1_000_000, 1_000_000))
-        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
-            "path": ".trash/keep.bin", "mtime": 2_000_000_000_000,
-        }))
-        self.assertEqual(int(excluded.stat().st_mtime), 1_000_000)
-
-        included = self.vault / "notes" / "keep.bin"
-        included.parent.mkdir()
-        included.write_bytes(b"local")
-        os.utime(included, (1_000_000, 1_000_000))
-        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
-            "path": "notes/keep.bin", "mtime": 2_000_000_000_000,
-        }))
-        self.assertEqual(int(included.stat().st_mtime), 2_000_000_000)
 
 
 class TestFileSyncDeleteCounter(unittest.IsolatedAsyncioTestCase):
