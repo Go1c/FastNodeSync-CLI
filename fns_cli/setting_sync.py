@@ -261,6 +261,9 @@ class SettingSync:
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
             return
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncMtime for excluded path: %s", rel_path)
+            return
         full = self.vault_path / rel_path
         if full.exists():
             try:

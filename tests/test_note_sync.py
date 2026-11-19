@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,26 @@ class TestNoteSyncInbound(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertTrue(old.exists())
         self.assertFalse((self.vault / ".trash" / "new.md").exists())
+
+    async def test_excluded_mtime_is_not_applied(self):
+        self.engine.is_excluded.side_effect = lambda path: path.startswith(".trash/")
+        excluded = self.vault / ".trash" / "keep.md"
+        excluded.parent.mkdir()
+        excluded.write_text("local", encoding="utf-8")
+        os.utime(excluded, (1_000_000, 1_000_000))
+        await self.ns._on_sync_mtime(_wrap("NoteSyncMtime", {
+            "path": ".trash/keep.md", "mtime": 2_000_000_000_000,
+        }))
+        self.assertEqual(int(excluded.stat().st_mtime), 1_000_000)
+
+        included = self.vault / "notes" / "keep.md"
+        included.parent.mkdir()
+        included.write_text("local", encoding="utf-8")
+        os.utime(included, (1_000_000, 1_000_000))
+        await self.ns._on_sync_mtime(_wrap("NoteSyncMtime", {
+            "path": "notes/keep.md", "mtime": 2_000_000_000_000,
+        }))
+        self.assertEqual(int(included.stat().st_mtime), 2_000_000_000)
 
     async def test_note_sync_pagination_flow(self):
         self.ns.register_handlers()

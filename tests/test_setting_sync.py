@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -102,6 +103,26 @@ class TestSettingSyncInbound(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertTrue(old.exists())
         self.assertFalse((self.vault / ".trash" / "new.json").exists())
+
+    async def test_excluded_mtime_is_not_applied(self):
+        self.engine.is_excluded.side_effect = lambda path: path.startswith(".trash/")
+        excluded = self.vault / ".trash" / "keep.json"
+        excluded.parent.mkdir()
+        excluded.write_text("{}", encoding="utf-8")
+        os.utime(excluded, (1_000_000, 1_000_000))
+        await self.sync._on_sync_mtime(WSMessage("SettingSyncMtime", {
+            "data": {"path": ".trash/keep.json", "mtime": 2_000_000_000_000},
+        }))
+        self.assertEqual(int(excluded.stat().st_mtime), 1_000_000)
+
+        included = self.vault / ".obsidian" / "keep.json"
+        included.parent.mkdir()
+        included.write_text("{}", encoding="utf-8")
+        os.utime(included, (1_000_000, 1_000_000))
+        await self.sync._on_sync_mtime(WSMessage("SettingSyncMtime", {
+            "data": {"path": ".obsidian/keep.json", "mtime": 2_000_000_000_000},
+        }))
+        self.assertEqual(int(included.stat().st_mtime), 2_000_000_000)
 
     async def test_setting_sync_pagination_flow(self):
         self.sync.register_handlers()

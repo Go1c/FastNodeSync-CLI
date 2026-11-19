@@ -8,6 +8,7 @@ Run with:  python -m pytest tests/test_file_sync.py -v
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,6 +119,25 @@ class TestFileSyncExcludes(unittest.IsolatedAsyncioTestCase):
             "12345678-1234-1234-1234-123456789012", 0, b"remote",
         )
         self.assertEqual(local.read_bytes(), b"local")
+
+    async def test_excluded_mtime_is_not_applied(self):
+        excluded = self.vault / ".trash" / "keep.bin"
+        excluded.parent.mkdir()
+        excluded.write_bytes(b"local")
+        os.utime(excluded, (1_000_000, 1_000_000))
+        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
+            "path": ".trash/keep.bin", "mtime": 2_000_000_000_000,
+        }))
+        self.assertEqual(int(excluded.stat().st_mtime), 1_000_000)
+
+        included = self.vault / "notes" / "keep.bin"
+        included.parent.mkdir()
+        included.write_bytes(b"local")
+        os.utime(included, (1_000_000, 1_000_000))
+        await self.fs._on_sync_mtime(_wrap("FileSyncMtime", {
+            "path": "notes/keep.bin", "mtime": 2_000_000_000_000,
+        }))
+        self.assertEqual(int(included.stat().st_mtime), 2_000_000_000)
 
 
 class TestFileSyncDeleteCounter(unittest.IsolatedAsyncioTestCase):
