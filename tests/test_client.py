@@ -24,6 +24,7 @@ def _make_config() -> MagicMock:
     config.client.reconnect_max_retries = 3
     config.client.client_type = "fns-cli"
     config.server.token = "token"
+    config.server.vault = "test-vault"
     config.ws_api = "wss://example.com"
     return config
 
@@ -91,6 +92,74 @@ class TestWSClientReconnect(unittest.IsolatedAsyncioTestCase):
             await client._handle_text(raw)
 
         warning.assert_not_called()
+
+
+class TestWSClientVaultFiltering(unittest.IsolatedAsyncioTestCase):
+
+    async def test_foreign_vault_message_is_not_dispatched(self):
+        client = WSClient(_make_config())
+        handler = AsyncMock()
+        client.on("NoteSyncModify", handler)
+
+        raw = WSMessage("NoteSyncModify", {
+            "code": 1,
+            "vault": "other-vault",
+            "data": {"path": "foreign.md"},
+        }).encode()
+        with self.assertLogs("fns_cli.client", level="DEBUG") as cm:
+            await client._handle_text(raw)
+
+        handler.assert_not_awaited()
+        self.assertTrue(any("Ignoring message for vault 'other-vault'" in msg for msg in cm.output))
+
+    async def test_vault_name_with_newline_is_escaped_in_log(self):
+        client = WSClient(_make_config())
+        handler = AsyncMock()
+        client.on("NoteSyncModify", handler)
+
+        raw = WSMessage("NoteSyncModify", {
+            "code": 1,
+            "vault": "other-vault\nINFO forged log line",
+            "data": {"path": "foreign.md"},
+        }).encode()
+        with self.assertLogs("fns_cli.client", level="DEBUG") as cm:
+            await client._handle_text(raw)
+
+        handler.assert_not_awaited()
+        # The vault name is echoed with %r so a newline in it cannot forge a
+        # second log line.
+        ignore_lines = [m for m in cm.output if "Ignoring message for vault" in m]
+        self.assertEqual(len(ignore_lines), 1)
+        self.assertNotIn("\n", ignore_lines[0])
+        self.assertIn("\\n", ignore_lines[0])
+
+    async def test_non_string_vault_is_dispatched(self):
+        for vault in (123, ["other-vault"], {"name": "other-vault"}):
+            with self.subTest(vault=vault):
+                client = WSClient(_make_config())
+                handler = AsyncMock()
+                client.on("NoteSyncModify", handler)
+                raw = WSMessage("NoteSyncModify", {
+                    "code": 1,
+                    "vault": vault,
+                    "data": {"path": "local.md"},
+                }).encode()
+                await client._handle_text(raw)
+                handler.assert_awaited_once()
+
+    async def test_matching_empty_and_missing_vault_messages_are_dispatched(self):
+        for vault in ("test-vault", "", None):
+            with self.subTest(vault=vault):
+                client = WSClient(_make_config())
+                handler = AsyncMock()
+                client.on("NoteSyncModify", handler)
+                raw = WSMessage("NoteSyncModify", {
+                    "code": 1,
+                    "data": {"path": "local.md"},
+                    **({"vault": vault} if vault is not None else {}),
+                }).encode()
+                await client._handle_text(raw)
+                handler.assert_awaited_once()
 
 
 class TestWSClientLoopBinding(unittest.TestCase):
