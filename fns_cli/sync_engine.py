@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
+import os
+import posixpath
+import re
 from pathlib import Path
 
 from .client import WSClient
@@ -16,6 +19,32 @@ from .setting_sync import SettingSync
 from .state import SyncState
 
 log = logging.getLogger("fns_cli.sync_engine")
+
+_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:")
+_IS_WINDOWS = os.name == "nt"
+
+
+def _is_unsafe_rel_path(rel_path: str) -> bool:
+    """Return True when rel_path could escape the vault directory."""
+    if "\x00" in rel_path:
+        return True
+    rel_path = rel_path.replace("\\", "/")
+    if rel_path.startswith("/"):
+        return True
+    # "C:x" only escapes the vault on Windows; on POSIX it is a plain
+    # file name.
+    if _IS_WINDOWS and _DRIVE_PREFIX_RE.match(rel_path):
+        return True
+    return any(part == ".." for part in rel_path.split("/"))
+
+
+def _matches_exclude_pattern(rel_path: str, pattern: str) -> bool:
+    if fnmatch.fnmatch(rel_path, pattern):
+        return True
+    # A "dir/**" pattern also excludes the directory itself.
+    if pattern.endswith("/**"):
+        return fnmatch.fnmatch(rel_path, pattern[:-3])
+    return False
 
 
 class SyncEngine:
@@ -41,10 +70,15 @@ class SyncEngine:
         return rel_path in self._ignored_files
 
     def is_excluded(self, rel_path: str) -> bool:
+        if not rel_path:
+            return False
+        if _is_unsafe_rel_path(rel_path):
+            return True
+        rel_path = posixpath.normpath(rel_path.replace("\\", "/"))
         if rel_path == ".fns_state.json":
             return True
         for pattern in self.config.sync.exclude_patterns:
-            if fnmatch.fnmatch(rel_path, pattern):
+            if _matches_exclude_pattern(rel_path, pattern):
                 return True
         return False
 

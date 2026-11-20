@@ -184,6 +184,12 @@ class SettingSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncModify for excluded path: %s", rel_path)
+            self._received_modify += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +209,12 @@ class SettingSync:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
         if not rel_path:
+            return
+
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncDelete for excluded path: %s", rel_path)
+            self._received_delete += 1
+            self._check_all_received()
             return
 
         full = self.vault_path / rel_path
@@ -225,6 +237,10 @@ class SettingSync:
         if not old_path or not new_path:
             return
 
+        if self.engine.is_excluded(old_path) or self.engine.is_excluded(new_path):
+            log.debug("Ignoring SettingSyncRename for excluded path: %s → %s", old_path, new_path)
+            return
+
         self._echo_hashes[old_path] = _DELETED
         old_full = self.vault_path / old_path
         new_full = self.vault_path / new_path
@@ -244,6 +260,9 @@ class SettingSync:
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
+            return
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring SettingSyncMtime for excluded path: %s", rel_path)
             return
         full = self.vault_path / rel_path
         if full.exists():

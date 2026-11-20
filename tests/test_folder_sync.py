@@ -23,6 +23,7 @@ def _make_engine(vault_path: Path) -> MagicMock:
     engine.config = config
     engine.vault_path = vault_path
     engine.ws_client = ws
+    engine.is_excluded = MagicMock(return_value=False)
     return engine
 
 

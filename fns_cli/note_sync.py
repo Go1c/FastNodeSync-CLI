@@ -195,6 +195,12 @@ class NoteSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring NoteSyncModify for excluded path: %s", rel_path)
+            self._received_modify += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
@@ -217,6 +223,12 @@ class NoteSync:
         if not rel_path:
             return
 
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring NoteSyncDelete for excluded path: %s", rel_path)
+            self._received_delete += 1
+            self._check_all_received()
+            return
+
         full = self.vault_path / rel_path
         try:
             if full.exists():
@@ -237,6 +249,10 @@ class NoteSync:
         old_path: str = data.get("oldPath", "")
         new_path: str = data.get("path", "")
         if not old_path or not new_path:
+            return
+
+        if self.engine.is_excluded(old_path) or self.engine.is_excluded(new_path):
+            log.debug("Ignoring NoteSyncRename for excluded path: %s → %s", old_path, new_path)
             return
 
         self._echo_hashes[old_path] = _DELETED
@@ -263,6 +279,9 @@ class NoteSync:
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
+            return
+        if self.engine.is_excluded(rel_path):
+            log.debug("Ignoring NoteSyncMtime for excluded path: %s", rel_path)
             return
         full = self.vault_path / rel_path
         if full.exists():
