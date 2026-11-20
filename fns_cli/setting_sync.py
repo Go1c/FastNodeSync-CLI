@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_SETTING_DELETE,
     ACTION_SETTING_MODIFY,
@@ -73,8 +74,12 @@ class SettingSync:
         self._sync_complete = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context = ""
@@ -241,6 +246,11 @@ class SettingSync:
 
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_all_received()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -256,13 +266,45 @@ class SettingSync:
     async def _on_sync_need_upload(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         need_upload = data.get("needUpload", [])
-        if not isinstance(need_upload, list) or not need_upload:
+        if isinstance(need_upload, list) and need_upload:
+            log.info("← SettingSyncNeedUpload: %d files", len(need_upload))
+            # Legacy list form: one count per entry. If no entry yields a
+            # path, count the frame once so the round can still complete.
+            paths = [
+                item.get("path", "") if isinstance(item, dict) else str(item)
+                for item in need_upload
+            ]
+            paths = [p for p in paths if p]
+            try:
+                for rel_path in paths:
+                    if not is_safe_rel_path(rel_path):
+                        log.warning("Ignoring unsafe setting upload path: %s", rel_path)
+                        continue
+                    await self.push_modify(rel_path, force=True)
+            finally:
+                if not self._sync_complete:
+                    self._received_upload += max(len(paths), 1)
+                    self._check_all_received()
             return
-        log.info("← SettingSyncNeedUpload: %d files", len(need_upload))
-        for item in need_upload:
-            rel_path = item.get("path", "") if isinstance(item, dict) else str(item)
-            if rel_path:
-                await self.push_modify(rel_path)
+
+        rel_path = data.get("path", "")
+        try:
+            if not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring unsafe setting upload path: %s", rel_path)
+                return
+            log.info("← SettingSyncNeedUpload: %s", rel_path)
+            # An explicit upload request from the server must bypass echo
+            # suppression, same as NoteSync's NeedPush handler.
+            await self.push_modify(rel_path, force=True)
+        finally:
+            # Count on arrival (see _on_sync_mtime): a detail the server sent
+            # must advance this round even if we cannot act on it. Once the
+            # round is complete there is nothing left to count.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -276,6 +318,8 @@ class SettingSync:
         last_time = data.get("lastTime", 0)
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
         self._pending_last_time = last_time
         self._got_end = True
         log.info(
@@ -286,7 +330,7 @@ class SettingSync:
             data.get("needUploadCount", 0),
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected == 0:
             self._sync_complete = True
             self._commit_last_time()
@@ -325,8 +369,12 @@ class SettingSync:
         self._got_end = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
@@ -334,12 +382,14 @@ class SettingSync:
     def _check_all_received(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             log.info(
-                "SettingSync complete: %d modified, %d deleted",
+                "SettingSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload,
                 self._received_modify,
+                self._received_mtime,
                 self._received_delete,
             )
             self._sync_complete = True

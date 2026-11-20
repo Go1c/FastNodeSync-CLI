@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_FILE_CHUNK_DOWNLOAD,
     ACTION_FILE_DELETE,
@@ -73,8 +74,12 @@ class FileSync:
         self._pending_download_paths: set[str] = set()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context: str = ""
@@ -87,6 +92,7 @@ class FileSync:
         self._upload_worker_count = upload_concurrency
         self._upload_workers: set[asyncio.Task] = set()
         self._upload_queue: asyncio.Queue | None = None
+        self._last_upload_progress_monotonic = time.monotonic()
         # See NoteSync._echo_hashes — same semantics here. Updated on both
         # inbound (server write / chunk finalize / rename / delete) and
         # outbound (push_upload / push_delete) so the cache tracks the most
@@ -96,6 +102,14 @@ class FileSync:
     @property
     def is_sync_complete(self) -> bool:
         return self._sync_complete
+
+    @property
+    def expected_detail_count(self) -> int:
+        return self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+
+    @property
+    def received_detail_count(self) -> int:
+        return self._received_upload + self._received_modify + self._received_mtime + self._received_delete
 
     def register_handlers(self) -> None:
         ws = self.engine.ws_client
@@ -117,8 +131,12 @@ class FileSync:
         self._pending_download_paths.clear()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
@@ -132,8 +150,8 @@ class FileSync:
             return False
         if self._pending_download_paths or self._download_sessions:
             return False
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             return False
         return (time.monotonic() - self._last_sync_activity_monotonic) >= stale_seconds
@@ -193,26 +211,42 @@ class FileSync:
 
     async def _on_upload_session(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         session_id: str = data.get("sessionId", "")
         chunk_size: int = data.get("chunkSize", self.config.sync.file_chunk_size)
         rel_path: str = data.get("path", "")
 
-        if not session_id or not rel_path:
-            return
+        try:
+            if not session_id or not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring upload request for unsafe path: %s", rel_path)
+                return
 
-        full = self.vault_path / rel_path
-        if not full.exists():
-            log.warning("Upload requested but file missing: %s", rel_path)
-            return
+            full = self.vault_path / rel_path
+            if not full.exists():
+                log.warning("Upload requested but file missing: %s", rel_path)
+                return
 
-        await self._ensure_upload_workers()
-        completion = asyncio.get_running_loop().create_future()
-        await self._ensure_upload_queue().put(
-            (session_id, chunk_size, rel_path, full, completion)
-        )
-        task = asyncio.create_task(self._await_upload_completion(completion))
-        self._upload_tasks.add(task)
-        task.add_done_callback(self._upload_tasks.discard)
+            await self._ensure_upload_workers()
+            completion = asyncio.get_running_loop().create_future()
+            await self._ensure_upload_queue().put(
+                (session_id, chunk_size, rel_path, full, completion)
+            )
+            self._last_upload_progress_monotonic = time.monotonic()
+            task = asyncio.create_task(self._await_upload_completion(completion))
+            self._upload_tasks.add(task)
+            task.add_done_callback(self._upload_tasks.discard)
+        finally:
+            # Count on arrival (see _on_sync_mtime), after the upload task is
+            # registered so a caller that observes completion can wait for it.
+            # FileUpload also arrives outside a sync round (the watcher's
+            # FileUploadCheck gets the same reply); once the round is complete
+            # there is nothing left to count, and counting would only repeat
+            # the "sync complete" log.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_complete()
 
     def _ensure_upload_queue(self) -> asyncio.Queue:
         if self._upload_queue is None:
@@ -228,6 +262,31 @@ class FileSync:
 
     async def _await_upload_completion(self, completion: asyncio.Future) -> None:
         await completion
+
+    async def wait_uploads_idle(
+        self,
+        progress_timeout: float = 60.0,
+        poll_interval: float = 0.1,
+    ) -> None:
+        """Wait until queued and in-flight uploads finish.
+
+        Uses a progress timeout rather than a total timeout: every chunk sent
+        refreshes the progress timestamp, so a large upload is not cut off as
+        long as it keeps moving. One-shot commands call this before closing
+        the connection so in-flight uploads are not truncated.
+        """
+        while self._upload_tasks or self._upload_queue_pending():
+            idle_for = time.monotonic() - self._last_upload_progress_monotonic
+            if idle_for >= progress_timeout:
+                log.warning(
+                    "Giving up waiting for %d uploads after %.0fs without progress",
+                    len(self._upload_tasks), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
+
+    def _upload_queue_pending(self) -> bool:
+        return self._upload_queue is not None and not self._upload_queue.empty()
 
     async def _upload_queue_worker(self) -> None:
         while True:
@@ -266,12 +325,14 @@ class FileSync:
             end = min(offset + chunk_size, total)
             chunk = build_binary_chunk(session_id, idx, file_data[offset:end])
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
             offset = end
             idx += 1
             await asyncio.sleep(0)
         if total == 0:
             chunk = build_binary_chunk(session_id, 0, b"")
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
         log.info("Upload complete: %s (%d chunks)", rel_path, idx)
 
     async def _on_upload_ack(self, msg: WSMessage) -> None:
@@ -379,6 +440,11 @@ class FileSync:
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         self._mark_sync_activity()
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_complete()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -477,6 +543,7 @@ class FileSync:
 
     async def _on_sync_page(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         if isinstance(msg.data, dict):
             page_index = data.get("pageIndex") if data.get("pageIndex") is not None else msg.data.get("pageIndex", 0)
             is_last = data.get("isLast") if data.get("isLast") is not None else msg.data.get("isLast", False)
@@ -505,15 +572,16 @@ class FileSync:
         self._pending_last_time = last_time
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
-        need_upload = data.get("needUploadCount", 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
 
         self._got_end = True
         log.info(
             "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
-            last_time, self._expected_modify, self._expected_delete, need_upload,
+            last_time, self._expected_modify, self._expected_delete, self._expected_upload,
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected > 0:
             await self._send_page_ack(self._sync_context, -1, self._sync_vault)
 
@@ -522,12 +590,13 @@ class FileSync:
     def _check_complete(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected and not self._pending_download_paths and not self._download_sessions:
             log.info(
-                "FileSync complete: %d modified, %d deleted",
-                self._received_modify, self._received_delete,
+                "FileSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload, self._received_modify,
+                self._received_mtime, self._received_delete,
             )
             self._sync_complete = True
             self._commit_last_time()
