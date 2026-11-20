@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import file_content_hash_binary, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_FILE_CHUNK_DOWNLOAD,
     ACTION_FILE_DELETE,
@@ -29,6 +30,7 @@ from .protocol import (
     WSMessage,
     build_binary_chunk,
 )
+from .state import SyncState, baseline_matches, commit_round_baseline
 
 if TYPE_CHECKING:
     from .sync_engine import SyncEngine
@@ -73,8 +75,12 @@ class FileSync:
         self._pending_download_paths: set[str] = set()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context: str = ""
@@ -87,15 +93,37 @@ class FileSync:
         self._upload_worker_count = upload_concurrency
         self._upload_workers: set[asyncio.Task] = set()
         self._upload_queue: asyncio.Queue | None = None
+        self._last_upload_progress_monotonic = time.monotonic()
         # See NoteSync._echo_hashes — same semantics here. Updated on both
         # inbound (server write / chunk finalize / rename / delete) and
         # outbound (push_upload / push_delete) so the cache tracks the most
         # recently known synced state, not just what the server pushed.
         self._echo_hashes: dict[str, str] = {}
+        # Baseline bookkeeping for the current round (see _commit_baseline):
+        # entries as reported, uploads still awaiting an ack (path → the entry
+        # that was sent — the ack must record that hash, not the current one),
+        # upload directives the server actually delivered, and the count it
+        # announced in FileSyncEnd.
+        self._reported: dict[str, dict] = {}
+        self._pending_uploads: dict[str, dict] = {}
+        self._upload_directives: set[str] = set()
+        self._baseline_committed = False
+        # Paths whose chunks have all been sent but whose FileUploadAck has
+        # not arrived yet. The baseline is only written on the ack, and one-
+        # shot commands close the connection once this set drains.
+        self._awaiting_ack: set[str] = set()
 
     @property
     def is_sync_complete(self) -> bool:
         return self._sync_complete
+
+    @property
+    def expected_detail_count(self) -> int:
+        return self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+
+    @property
+    def received_detail_count(self) -> int:
+        return self._received_upload + self._received_modify + self._received_mtime + self._received_delete
 
     def register_handlers(self) -> None:
         ws = self.engine.ws_client
@@ -117,12 +145,21 @@ class FileSync:
         self._pending_download_paths.clear()
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
         self._last_sync_activity_monotonic = time.monotonic()
+        self._reported = {}
+        self._pending_uploads = {}
+        self._upload_directives = set()
+        self._baseline_committed = False
+        self._awaiting_ack.clear()
 
     def _mark_sync_activity(self) -> None:
         self._last_sync_activity_monotonic = time.monotonic()
@@ -132,8 +169,8 @@ class FileSync:
             return False
         if self._pending_download_paths or self._download_sessions:
             return False
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             return False
         return (time.monotonic() - self._last_sync_activity_monotonic) >= stale_seconds
@@ -143,6 +180,7 @@ class FileSync:
         last_time = self.engine.state.last_file_sync_time
         ctx = str(uuid.uuid4())
         files = self._collect_local_files()
+        self._reported = {entry["path"]: entry for entry in files}
         msg = WSMessage(ACTION_FILE_SYNC, {
             "context": ctx,
             "vault": self.config.server.vault,
@@ -162,6 +200,11 @@ class FileSync:
             return
 
         stat = full.stat()
+        self._pending_uploads[rel_path] = {
+            "hash": hash_,
+            "mtime": int(stat.st_mtime * 1000),
+            "size": stat.st_size,
+        }
         msg = WSMessage(ACTION_FILE_UPLOAD_CHECK, {
             "vault": self.config.server.vault,
             "path": rel_path,
@@ -193,26 +236,72 @@ class FileSync:
 
     async def _on_upload_session(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         session_id: str = data.get("sessionId", "")
         chunk_size: int = data.get("chunkSize", self.config.sync.file_chunk_size)
         rel_path: str = data.get("path", "")
 
-        if not session_id or not rel_path:
-            return
+        try:
+            if not session_id or not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring upload request for unsafe path: %s", rel_path)
+                return
 
-        full = self.vault_path / rel_path
-        if not full.exists():
-            log.warning("Upload requested but file missing: %s", rel_path)
-            return
+            # The server named this path in an upload directive: it does not
+            # consider the reported content to be in sync.
+            self._upload_directives.add(rel_path)
 
-        await self._ensure_upload_workers()
-        completion = asyncio.get_running_loop().create_future()
-        await self._ensure_upload_queue().put(
-            (session_id, chunk_size, rel_path, full, completion)
-        )
-        task = asyncio.create_task(self._await_upload_completion(completion))
-        self._upload_tasks.add(task)
-        task.add_done_callback(self._upload_tasks.discard)
+            full = self.vault_path / rel_path
+            if not full.exists():
+                log.warning("Upload requested but file missing: %s", rel_path)
+                return
+
+            # Track the upload until the server acknowledges it: the round may
+            # finish before the upload does, and the path must not be committed
+            # to the baseline while the content is not known to be on the
+            # server. A watcher-driven FileUploadCheck already recorded the
+            # hash it sent, and the server's upload session carries that same
+            # hash; otherwise use the hash from the FileSync report, which is
+            # what this session was created for.
+            if rel_path not in self._pending_uploads:
+                reported = self._reported.get(rel_path)
+                if reported is not None:
+                    self._pending_uploads[rel_path] = {
+                        "hash": reported["contentHash"],
+                        "mtime": reported["mtime"],
+                        "size": reported["size"],
+                    }
+                else:
+                    try:
+                        stat = full.stat()
+                        self._pending_uploads[rel_path] = {
+                            "hash": file_content_hash_binary(full),
+                            "mtime": int(stat.st_mtime * 1000),
+                            "size": stat.st_size,
+                        }
+                    except OSError:
+                        log.debug("Cannot stat %s before upload; baseline deferred", rel_path)
+
+            await self._ensure_upload_workers()
+            completion = asyncio.get_running_loop().create_future()
+            await self._ensure_upload_queue().put(
+                (session_id, chunk_size, rel_path, full, completion)
+            )
+            self._last_upload_progress_monotonic = time.monotonic()
+            task = asyncio.create_task(self._await_upload_completion(completion))
+            self._upload_tasks.add(task)
+            task.add_done_callback(self._upload_tasks.discard)
+        finally:
+            # Count on arrival (see _on_sync_mtime), after the upload task is
+            # registered so a caller that observes completion can wait for it.
+            # FileUpload also arrives outside a sync round (the watcher's
+            # FileUploadCheck gets the same reply); once the round is complete
+            # there is nothing left to count, and counting would only repeat
+            # the "sync complete" log.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_complete()
 
     def _ensure_upload_queue(self) -> asyncio.Queue:
         if self._upload_queue is None:
@@ -228,6 +317,48 @@ class FileSync:
 
     async def _await_upload_completion(self, completion: asyncio.Future) -> None:
         await completion
+
+    async def wait_uploads_idle(
+        self,
+        progress_timeout: float = 60.0,
+        poll_interval: float = 0.1,
+        ack_timeout: float = 30.0,
+    ) -> None:
+        """Wait until queued, in-flight and unacknowledged uploads finish.
+
+        Uses progress timeouts rather than total timeouts: every chunk sent
+        and every FileUploadAck received refreshes the progress timestamp, so
+        a large upload is not cut off as long as it keeps moving. One-shot
+        commands call this before closing the connection so in-flight uploads
+        are not truncated.
+
+        Sending the last chunk is not the end of an upload: the server still
+        has to write it and answer FileUploadAck, and the baseline is only
+        recorded on that ack. The second loop waits for those acks with its
+        own progress timeout (``ack_timeout``); if none arrives the command
+        continues without them rather than hanging.
+        """
+        while self._upload_tasks or self._upload_queue_pending():
+            idle_for = time.monotonic() - self._last_upload_progress_monotonic
+            if idle_for >= progress_timeout:
+                log.warning(
+                    "Giving up waiting for %d uploads after %.0fs without progress",
+                    len(self._upload_tasks), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
+        while self._awaiting_ack:
+            idle_for = time.monotonic() - self._last_upload_progress_monotonic
+            if idle_for >= ack_timeout:
+                log.warning(
+                    "Giving up waiting for %d upload acks after %.0fs without progress",
+                    len(self._awaiting_ack), idle_for,
+                )
+                return
+            await asyncio.sleep(poll_interval)
+
+    def _upload_queue_pending(self) -> bool:
+        return self._upload_queue is not None and not self._upload_queue.empty()
 
     async def _upload_queue_worker(self) -> None:
         while True:
@@ -266,19 +397,49 @@ class FileSync:
             end = min(offset + chunk_size, total)
             chunk = build_binary_chunk(session_id, idx, file_data[offset:end])
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
             offset = end
             idx += 1
             await asyncio.sleep(0)
         if total == 0:
             chunk = build_binary_chunk(session_id, 0, b"")
             await self.engine.ws_client.send_bytes(chunk)
+            self._last_upload_progress_monotonic = time.monotonic()
+        # All chunks are out; the server still has to commit the upload and
+        # answer FileUploadAck. Registered before the worker returns so a
+        # waiter observing an empty queue already sees this path.
+        self._awaiting_ack.add(rel_path)
+        self._last_upload_progress_monotonic = time.monotonic()
         log.info("Upload complete: %s (%d chunks)", rel_path, idx)
 
     async def _on_upload_ack(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path = data.get("path", "")
-        if rel_path:
-            log.debug("← FileUploadAck: %s", rel_path)
+        if not rel_path:
+            return
+        log.debug("← FileUploadAck: %s", rel_path)
+        # Confirms the upload finished server-side; one-shot commands may be
+        # waiting for the last of these before closing the connection.
+        self._awaiting_ack.discard(rel_path)
+        self._last_upload_progress_monotonic = time.monotonic()
+
+        # The server now holds the content we reported (or already held it).
+        # Record the *reported* hash/mtime/size, not the on-disk state: the
+        # server's row carries the hash we sent, and if the file changed while
+        # the upload was in flight the next round must see that difference.
+        pending = self._pending_uploads.pop(rel_path, None)
+        if pending is None:
+            # Ack for a check we never issued in this round (e.g. a broadcast
+            # echo); nothing to confirm.
+            return
+        SyncState.set_baseline(
+            self.engine.state.file_baseline,
+            rel_path,
+            pending["hash"],
+            pending["mtime"],
+            pending["size"],
+        )
+        self.engine.state.save()
 
     async def _on_sync_update(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -292,7 +453,18 @@ class FileSync:
 
         if content is None:
             # Attachment files: server sends metadata only, we must request
-            # a chunked download via FileChunkDownload.
+            # a chunked download via FileChunkDownload — unless the local copy
+            # already is the content the server is describing. Incremental
+            # reporting leaves our own previous uploads out of the request, so
+            # the server answers them with FileSyncUpdate; downloading them
+            # again would undo the point of reporting less.
+            if self._local_matches_attachment(rel_path, data):
+                log.debug(
+                    "← FileSyncUpdate: %s already matches the local content", rel_path,
+                )
+                self._received_modify += 1
+                self._check_complete()
+                return
             self._pending_download_paths.add(rel_path)
             log.info("← FileSyncUpdate (requesting chunk download): %s", rel_path)
             await self._request_chunk_download(rel_path, data)
@@ -315,12 +487,71 @@ class FileSync:
             # Record echo hash after the write is durable on disk.
             if full.exists():
                 self._echo_hashes[rel_path] = file_content_hash_binary(full)
+                self._record_baseline(rel_path)
             log.info("← FileSyncUpdate: %s", rel_path)
         except Exception:
             log.exception("Failed to write file %s", rel_path)
 
         self._received_modify += 1
         self._check_complete()
+
+    def _local_matches_attachment(self, rel_path: str, data: dict) -> bool:
+        """Whether the attachment described by FileSyncUpdate is already on disk.
+
+        The server sends contentHash and size for attachments (3.0.0 and
+        later), so the local file can be compared before asking for a chunked
+        download. Anything unexpected — a missing or mistyped field, no local
+        file, a directory, a stat failure — returns False, and the normal
+        download path runs unchanged.
+        """
+        content_hash = data.get("contentHash")
+        size = data.get("size")
+        if (
+            not isinstance(content_hash, str)
+            or not content_hash
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+        ):
+            return False
+
+        full = self.vault_path / rel_path
+        try:
+            stat = full.stat()
+        except OSError:
+            return False
+        if not full.is_file() or stat.st_size != size:
+            return False
+
+        mtime = int(stat.st_mtime * 1000)
+        base = self.engine.state.file_baseline.get(rel_path)
+        if (
+            base is not None
+            and base.get("hash") == content_hash
+            and base.get("size") == size
+            and base.get("mtime") == mtime
+        ):
+            # Fast path: the baseline pins this exact content and the file has
+            # not been touched since, so the bytes need not be hashed again.
+            local_hash = content_hash
+        else:
+            local_hash = file_content_hash_binary(full)
+        if local_hash != content_hash:
+            return False
+
+        # Confirmed identical: the server's content is what is on disk, so
+        # this path is in the baseline whether it came from the fast path or
+        # from hashing. Do not re-hash via _record_baseline here; the fast
+        # path exists precisely to avoid reading the file.
+        self._pending_uploads.pop(rel_path, None)
+        SyncState.set_baseline(
+            self.engine.state.file_baseline,
+            rel_path,
+            content_hash,
+            mtime,
+            size,
+        )
+        self._echo_hashes[rel_path] = content_hash
+        return True
 
     async def _request_chunk_download(self, rel_path: str, data: dict) -> None:
         """Send FileChunkDownload request for a file that needs chunked transfer."""
@@ -346,6 +577,9 @@ class FileSync:
                 full.unlink()
                 log.info("← FileSyncDelete: %s", rel_path)
                 self._try_remove_empty_parent(full)
+            # The server no longer has this path: drop it from the baseline so
+            # a later local recreate is reported as new instead of unchanged.
+            SyncState.drop_baseline(self.engine.state.file_baseline, rel_path)
         except Exception:
             log.exception("Failed to delete file %s", rel_path)
 
@@ -372,6 +606,8 @@ class FileSync:
                 old_full.rename(new_full)
                 if new_full.exists():
                     self._echo_hashes[new_path] = file_content_hash_binary(new_full)
+                    self._record_baseline(new_path)
+                SyncState.drop_baseline(self.engine.state.file_baseline, old_path)
                 log.info("← FileSyncRename: %s → %s", old_path, new_path)
         except Exception:
             log.exception("Failed to rename file %s → %s", old_path, new_path)
@@ -379,6 +615,11 @@ class FileSync:
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         self._mark_sync_activity()
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_complete()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -388,6 +629,7 @@ class FileSync:
             try:
                 ts = mtime / 1000.0
                 os.utime(full, (ts, ts))
+                self._record_baseline(rel_path)
             except OSError:
                 pass
 
@@ -436,6 +678,7 @@ class FileSync:
                     f.write(session.chunks.get(i, b""))
             if full.exists():
                 self._echo_hashes[rel_path] = file_content_hash_binary(full)
+                self._record_baseline(rel_path)
             log.info("← Chunked download complete: %s", rel_path)
         except Exception:
             log.exception("Failed to write downloaded file %s", rel_path)
@@ -457,6 +700,7 @@ class FileSync:
                 full.parent.mkdir(parents=True, exist_ok=True)
                 full.write_bytes(b"")
                 self._echo_hashes[rel_path] = file_content_hash_binary(full)
+                self._record_baseline(rel_path)
                 log.info("← Zero-chunk download complete: %s", rel_path)
         except Exception:
             log.exception("Failed to finalize zero-chunk download %s", rel_path)
@@ -477,6 +721,7 @@ class FileSync:
 
     async def _on_sync_page(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        self._mark_sync_activity()
         if isinstance(msg.data, dict):
             page_index = data.get("pageIndex") if data.get("pageIndex") is not None else msg.data.get("pageIndex", 0)
             is_last = data.get("isLast") if data.get("isLast") is not None else msg.data.get("isLast", False)
@@ -505,15 +750,16 @@ class FileSync:
         self._pending_last_time = last_time
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
-        need_upload = data.get("needUploadCount", 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
 
         self._got_end = True
         log.info(
             "← FileSyncEnd (lastTime=%d, needModify=%d, needDelete=%d, needUpload=%d)",
-            last_time, self._expected_modify, self._expected_delete, need_upload,
+            last_time, self._expected_modify, self._expected_delete, self._expected_upload,
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected > 0:
             await self._send_page_ack(self._sync_context, -1, self._sync_vault)
 
@@ -522,12 +768,13 @@ class FileSync:
     def _check_complete(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected and not self._pending_download_paths and not self._download_sessions:
             log.info(
-                "FileSync complete: %d modified, %d deleted",
-                self._received_modify, self._received_delete,
+                "FileSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload, self._received_modify,
+                self._received_mtime, self._received_delete,
             )
             self._sync_complete = True
             self._commit_last_time()
@@ -539,14 +786,76 @@ class FileSync:
             )
 
     def _commit_last_time(self) -> None:
-        if self._pending_last_time:
-            log.info("Committing file lastTime=%d", self._pending_last_time)
-            self.engine.state.last_file_sync_time = self._pending_last_time
-            self.engine.state.save()
-            self._pending_last_time = 0
+        if not self._pending_last_time:
+            return
+        log.info("Committing file lastTime=%d", self._pending_last_time)
+        self.engine.state.last_file_sync_time = self._pending_last_time
+        self._commit_baseline()
+        self.engine.state.save()
+        self._pending_last_time = 0
+
+    def _record_baseline(self, rel_path: str) -> None:
+        """Record the on-disk state after the server confirmed this path."""
+        full = self.vault_path / rel_path
+        try:
+            stat = full.stat()
+        except OSError:
+            log.debug("Cannot record baseline for %s", rel_path)
+            return
+        # A download or mtime sync answers the upload check as well; the
+        # pending entry is superseded by what is on disk now.
+        self._pending_uploads.pop(rel_path, None)
+        SyncState.set_baseline(
+            self.engine.state.file_baseline,
+            rel_path,
+            file_content_hash_binary(full),
+            int(stat.st_mtime * 1000),
+            stat.st_size,
+        )
+
+    def _commit_baseline(self) -> None:
+        """Fold this round's report into the persisted baseline."""
+        if self._baseline_committed:
+            return
+        self._baseline_committed = True
+        committed = commit_round_baseline(
+            self.vault_path,
+            self.engine.state.file_baseline,
+            self._reported,
+            self._pending_uploads,
+            self._upload_directives,
+            self._expected_upload,
+        )
+        log.info(
+            "File baseline committed: %d reported paths, %d total",
+            committed,
+            len(self.engine.state.file_baseline),
+        )
 
     def _collect_local_files(self) -> list[dict]:
-        """Collect non-note, non-excluded local files with hashes for FileSync."""
+        """Collect local files with hashes for FileSync.
+
+        In incremental mode (a previous sync completed and a baseline exists)
+        only files that differ from the baseline are reported. The server
+        treats every reported path outside its incremental window as "client
+        has this, server may not" and asks for an upload, so reporting
+        unchanged files makes it ask for a re-upload on every reconnect.
+        Without a baseline (first run, state file written before baselines
+        existed) everything is reported as before.
+
+        ``push`` does not go through here: it uploads every file directly, so
+        it also serves as the recovery path if the server ever loses files the
+        baseline still lists.
+        """
+        state = self.engine.state
+        # Only incremental once a previous round completed (the server's window
+        # is meaningful) *and* a baseline exists. Without a baseline every path
+        # is reported, which is what the server needs on a first run or after
+        # upgrading from a state file written before baselines existed.
+        incremental = (
+            state.last_file_sync_time > 0
+            and bool(state.file_baseline)
+        )
         files = []
         for fp in self.vault_path.rglob("*"):
             if fp.is_dir():
@@ -563,16 +872,22 @@ class FileSync:
                 continue
             try:
                 stat = fp.stat()
-                files.append({
+                entry = {
                     "path": rel,
                     "pathHash": path_hash(rel),
                     "contentHash": file_content_hash_binary(fp),
                     "mtime": int(stat.st_mtime * 1000),
                     "ctime": int(stat.st_ctime * 1000),
                     "size": stat.st_size,
-                })
+                }
             except Exception:
                 log.debug("Failed to hash file %s, skipping", rel)
+                continue
+            if incremental and baseline_matches(
+                state.file_baseline.get(rel), entry["contentHash"], entry["size"]
+            ):
+                continue
+            files.append(entry)
         return files
 
     def _try_remove_empty_parent(self, file_path: Path) -> None:

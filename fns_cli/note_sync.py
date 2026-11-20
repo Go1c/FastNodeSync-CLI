@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .hash_utils import content_hash, path_hash
+from .pathguard import is_safe_rel_path
 from .protocol import (
     ACTION_NOTE_DELETE,
     ACTION_NOTE_MODIFY,
@@ -50,8 +51,12 @@ class NoteSync:
         self._sync_complete = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._got_end = False
         self._pending_last_time = 0
         self._sync_context = ""
@@ -260,6 +265,11 @@ class NoteSync:
 
     async def _on_sync_mtime(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
+        # Count the detail on arrival, not on a successful utime: the server
+        # counts the frames it sends, so a zero mtime or a missing file must
+        # still advance this round towards completion.
+        self._received_mtime += 1
+        self._check_all_received()
         rel_path: str = data.get("path", "")
         mtime = data.get("mtime", 0)
         if not rel_path or not mtime:
@@ -275,12 +285,23 @@ class NoteSync:
     async def _on_sync_need_push(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
         rel_path: str = data.get("path", "")
-        if not rel_path:
-            return
-        log.info("← NoteSyncNeedPush: %s", rel_path)
-        # NeedPush is an explicit server request to re-send the local content;
-        # it must bypass the normal echo suppression check.
-        await self.push_modify(rel_path, force=True)
+        try:
+            if not rel_path:
+                return
+            if not is_safe_rel_path(rel_path):
+                log.warning("Ignoring NeedPush for unsafe path: %s", rel_path)
+                return
+            log.info("← NoteSyncNeedPush: %s", rel_path)
+            # NeedPush is an explicit server request to re-send the local content;
+            # it must bypass the normal echo suppression check.
+            await self.push_modify(rel_path, force=True)
+        finally:
+            # Count on arrival (see _on_sync_mtime): a detail the server sent
+            # must advance this round even if we cannot act on it. Once the
+            # round is complete there is nothing left to count.
+            if not self._sync_complete:
+                self._received_upload += 1
+                self._check_all_received()
 
     async def _on_sync_end(self, msg: WSMessage) -> None:
         data = _extract_inner(msg.data)
@@ -294,6 +315,8 @@ class NoteSync:
         last_time = data.get("lastTime", 0)
         self._expected_modify = int(data.get("needModifyCount") or 0)
         self._expected_delete = int(data.get("needDeleteCount") or 0)
+        self._expected_upload = int(data.get("needUploadCount") or 0)
+        self._expected_mtime = int(data.get("needSyncMtimeCount") or 0)
         self._pending_last_time = last_time
 
         self._got_end = True
@@ -305,7 +328,7 @@ class NoteSync:
             data.get("needUploadCount", 0),
         )
 
-        total_expected = self._expected_modify + self._expected_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
         if total_expected == 0:
             self._sync_complete = True
             self._commit_last_time()
@@ -344,8 +367,12 @@ class NoteSync:
         self._got_end = False
         self._expected_modify = 0
         self._expected_delete = 0
+        self._expected_upload = 0
+        self._expected_mtime = 0
         self._received_modify = 0
         self._received_delete = 0
+        self._received_upload = 0
+        self._received_mtime = 0
         self._pending_last_time = 0
         self._sync_context = ""
         self._sync_vault = ""
@@ -353,12 +380,14 @@ class NoteSync:
     def _check_all_received(self) -> None:
         if not self._got_end:
             return
-        total_expected = self._expected_modify + self._expected_delete
-        total_received = self._received_modify + self._received_delete
+        total_expected = self._expected_upload + self._expected_modify + self._expected_mtime + self._expected_delete
+        total_received = self._received_upload + self._received_modify + self._received_mtime + self._received_delete
         if total_received >= total_expected:
             log.info(
-                "NoteSync complete: %d modified, %d deleted",
+                "NoteSync complete: %d uploaded, %d modified, %d mtime, %d deleted",
+                self._received_upload,
                 self._received_modify,
+                self._received_mtime,
                 self._received_delete,
             )
             self._sync_complete = True

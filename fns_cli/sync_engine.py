@@ -13,7 +13,7 @@ from .file_sync import FileSync
 from .folder_sync import FolderSync
 from .note_sync import NoteSync
 from .setting_sync import SettingSync
-from .state import SyncState
+from .state import SyncState, compute_baseline_scope
 
 log = logging.getLogger("fns_cli.sync_engine")
 
@@ -24,12 +24,39 @@ class SyncEngine:
         self.vault_path = config.vault_path
         self.ws_client = WSClient(config)
         self.state = SyncState.load(self.vault_path)
+        self._ensure_baseline_scope()
         self.note_sync = NoteSync(self)
         self.file_sync = FileSync(self)
         self.folder_sync = FolderSync(self)
         self.setting_sync = SettingSync(self)
         self._ignored_files: set[str] = set()
         self._watch_enabled = False
+
+    def _ensure_baseline_scope(self) -> None:
+        """Clear a baseline confirmed against a different server or vault.
+
+        A baseline entry means "this server's vault already has this content".
+        If `server.api` or `server.vault` changed while the local tree and
+        `.fns_state.json` stayed, trusting the old entries would make the
+        client skip every upload to the new target. The sync cursors are left
+        alone, matching the existing behavior when the target changes; only
+        the baselines are dropped.
+        """
+        scope = compute_baseline_scope(
+            self.config.server.api, self.config.server.vault,
+        )
+        if self.state.baseline_scope == scope:
+            return
+        had_baseline = bool(self.state.file_baseline or self.state.setting_baseline)
+        self.state.file_baseline = {}
+        self.state.setting_baseline = {}
+        self.state.baseline_scope = scope
+        if had_baseline:
+            log.info(
+                "Server address or vault changed; cleared the incremental baseline",
+            )
+        if self.vault_path.exists():
+            self.state.save()
 
     def ignore_file(self, rel_path: str) -> None:
         self._ignored_files.add(rel_path)
@@ -155,10 +182,12 @@ class SyncEngine:
 
         ws_task = asyncio.create_task(self.ws_client.run())
 
+        authenticated = False
         try:
             if not await self.ws_client.wait_ready(timeout=30):
                 log.error("Failed to authenticate within 30s")
                 return
+            authenticated = True
 
             if self.config.sync.sync_notes:
                 await self.note_sync.request_full_sync()
@@ -172,6 +201,14 @@ class SyncEngine:
                 await self.setting_sync.request_full_sync()
                 await self._wait_setting_sync(timeout=120)
         finally:
+            if authenticated:
+                # One-shot commands close the connection right after the sync
+                # round completes; let in-flight uploads finish first so large
+                # attachments are not truncated mid-chunk. Wait for the acks
+                # too: the incremental baseline is recorded on them, and the
+                # server needs the connection to finish writing the upload.
+                await self.file_sync.wait_uploads_idle()
+                await self.setting_sync.wait_modify_acks()
             await self.ws_client.close()
             ws_task.cancel()
             try:
@@ -186,13 +223,19 @@ class SyncEngine:
 
         ws_task = asyncio.create_task(self.ws_client.run())
 
+        authenticated = False
         try:
             if not await self.ws_client.wait_ready(timeout=30):
                 log.error("Failed to authenticate within 30s")
                 return
+            authenticated = True
 
             await self._initial_sync()
         finally:
+            if authenticated:
+                # See sync_once(): do not cut in-flight uploads short.
+                await self.file_sync.wait_uploads_idle()
+                await self.setting_sync.wait_modify_acks()
             await self.ws_client.close()
             ws_task.cancel()
             try:
@@ -261,8 +304,8 @@ class SyncEngine:
                 log.warning(
                     "FileSync stalled after FileSyncEnd "
                     "(expected=%d, received=%d); continuing with watcher enabled",
-                    self.file_sync._expected_modify + self.file_sync._expected_delete,
-                    self.file_sync._received_modify + self.file_sync._received_delete,
+                    self.file_sync.expected_detail_count,
+                    self.file_sync.received_detail_count,
                 )
                 break
             if loop.time() > deadline:

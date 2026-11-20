@@ -33,6 +33,7 @@ ACTION_FOLDER_RENAME = "FolderRename"
 ACTION_SETTING_SYNC = "SettingSync"
 ACTION_SETTING_MODIFY = "SettingModify"
 ACTION_SETTING_DELETE = "SettingDelete"
+ACTION_SETTING_MODIFY_ACK = "SettingModifyAck"
 
 # ── Server → Client actions ──────────────────────────────────────────
 ACTION_NOTE_SYNC_MODIFY = "NoteSyncModify"
